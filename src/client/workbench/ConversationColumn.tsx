@@ -97,6 +97,20 @@ export function ConversationColumn({
     : pendingInteractions.length > 0
       ? '等待回答'
       : memberStatusLabel(conversation?.status ?? member.lastRuntimeState)
+  const statusState = pendingInteractions.some(interaction => interaction.kind === 'approval')
+    ? 'waiting_approval'
+    : pendingInteractions.length > 0
+      ? 'waiting_approval'
+      : conversation?.status ?? member.lastRuntimeState
+  const statusClass = statusState === 'running'
+    ? css.columnStatusRunning
+    : statusState === 'waiting_approval'
+      ? css.columnStatusWaiting
+      : statusState === 'error'
+        ? css.columnStatusError
+        : statusState === 'starting'
+          ? css.columnStatusStarting
+          : undefined
   const modelCapabilities = useModelCapabilities(
     member.assistantSnapshot.provider,
     member.assistantSnapshot.model,
@@ -385,7 +399,7 @@ export function ConversationColumn({
           </div>
         </div>
         <div className={css.columnHeaderActions}>
-          <span className={css.columnStatus}>{statusLabel}</span>
+          <span className={`${css.columnStatus} ${statusClass ?? ''}`}>{statusLabel}</span>
           {expanded && (
             <Tooltip label="关闭放大对话" side="bottom" delayMs={400}>
               <button

@@ -195,6 +195,28 @@
   line-height: 16px;
 }
 
+.columnStatusStarting {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.columnStatusRunning {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-primary);
+  font-weight: 600;
+}
+
+.columnStatusWaiting {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+  font-weight: 600;
+}
+
+.columnStatusError {
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+  font-weight: 600;
+}
+
 .timeline {
   flex: 1;
   min-height: 0;
