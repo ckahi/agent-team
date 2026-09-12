@@ -185,7 +185,7 @@ describe('AssistantBuilderRuntime', () => {
       'glm-5.3',
     )
     expect(cwdVariable).toHaveBeenCalledWith('cwd', expect.any(Function))
-    expect(restrict).toHaveBeenCalledWith({ deny: ['bash'] })
+    expect(restrict).toHaveBeenCalledWith({ deny: ['write', 'edit', 'bash'] })
     expect(interactions.respond).toHaveBeenCalledWith(
       'agent-team:assistant-builder',
       'question:rpc-1',
@@ -313,6 +313,12 @@ function fakeAgentContext(
         { name: 'assistant_builder_prepare' },
         { name: 'assistant_builder_commit' },
         { name: 'ask_user_question' },
+        { name: 'read' },
+        { name: 'read_image' },
+        { name: 'glob' },
+        { name: 'grep' },
+        { name: 'write' },
+        { name: 'edit' },
         { name: 'bash' },
       ]),
       restrict,

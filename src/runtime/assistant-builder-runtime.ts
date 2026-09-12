@@ -44,7 +44,15 @@ export const ASSISTANT_BUILDER_PROMPT = `
 11. 你只能帮助设计和创建助手模板，不创建团队、不修改或删除已有助手，也不执行 Workspace 任务。
 
 保持中文、简洁、主动，但不要替用户猜测会显著影响成本、权限或能力范围的参数。
+
+你可以使用只读文件工具（read、read_image、glob、grep）查看工作区以理解上下文，从而把长期提示词写得贴合实际仓库；但不得修改任何文件，写工具对你不可用。
 `.trim()
+
+/**
+ * Read-only filesystem tools the builder may use to ground its assistant
+ * designs in the actual workspace. Mutating tools (write/edit) stay denied.
+ */
+const ASSISTANT_BUILDER_READONLY_TOOLS = new Set(['read', 'read_image', 'glob', 'grep'])
 
 interface AssistantBuilderConfiguration {
   provider: string
@@ -401,13 +409,13 @@ export class AssistantBuilderRuntime {
         'assistant_builder_commit',
         'ask_user_question',
       ])
-      agentCtx.tools.guard(execution => allowedTools.has(execution.name)
+      agentCtx.tools.guard(execution => (allowedTools.has(execution.name) || ASSISTANT_BUILDER_READONLY_TOOLS.has(execution.name))
         ? undefined
-        : 'The built-in Assistant Builder may only read its catalog, prepare a draft, and commit an explicitly confirmed draft.')
+        : 'The built-in Assistant Builder may only read its catalog, prepare a draft, commit an explicitly confirmed draft, and use read-only file tools.')
       this.registerTools(agentCtx, rawSessionId)
       const deniedTools = agentCtx.tools.schemas(agent)
         .map(tool => tool.name)
-        .filter(name => !allowedTools.has(name))
+        .filter(name => !allowedTools.has(name) && !ASSISTANT_BUILDER_READONLY_TOOLS.has(name))
       if (deniedTools.length > 0) agentCtx.tools.restrict({ deny: deniedTools })
       const promptSection = 'agent-team:assistant-builder'
       agentCtx.systemPrompt.section({
