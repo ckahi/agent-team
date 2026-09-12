@@ -12,6 +12,7 @@ import type {
 export const AGENT_TEAM_API_PATH = '/agent-team/api'
 export const AGENT_TEAM_EVENTS_PATH = '/agent-team/events'
 export const AGENT_TEAM_UPLOAD_PATH = '/agent-team/upload'
+export const AGENT_TEAM_PICK_DIRECTORY_PATH = '/agent-team/pick-directory'
 
 export const AGENT_TEAM_METHODS = [
   'catalog.get',

@@ -5,6 +5,7 @@ import type {
   PendingInteractionView,
   QuestionAnswerView,
 } from '../../transport/contracts.js'
+import { MARKDOWN_LABELS } from '../markdown-labels.js'
 import css from './ConversationColumn.module.css'
 
 export function PendingInteractionCard({
@@ -112,7 +113,7 @@ export function PendingInteractionCard({
                 <strong>{interaction.questions.length > 1 ? `${index + 1}. ${question.question}` : question.question}</strong>
               </legend>
               {question.detail && (
-                <div className={css.questionDetail}><MarkdownText text={question.detail} /></div>
+                <div className={css.questionDetail}><MarkdownText text={question.detail} labels={MARKDOWN_LABELS} /></div>
               )}
               {(question.options?.length ?? 0) > 0 && (
                 <div className={css.questionOptions}>

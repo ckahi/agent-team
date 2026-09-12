@@ -6,7 +6,6 @@ import {
   IconSendOutline16,
   IconStopFill16,
   MarkdownText,
-  MessageText,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
@@ -17,6 +16,7 @@ import type {
   WorkspaceUploadView,
 } from '../../transport/contracts.js'
 import { callAgentTeam, uploadAgentTeamFile } from '../api.js'
+import { MARKDOWN_LABELS } from '../markdown-labels.js'
 import {
   composerTriggerAt,
   matchingUserSkills,
@@ -739,8 +739,8 @@ export function ConversationNodeView({ node }: { node: ConversationNode }): JSX.
       {node.text && (
         <div className={css.messageText}>
           {node.kind === 'assistant'
-            ? <MarkdownText text={node.text} streaming={node.streaming === true} />
-            : <MessageText text={node.text} />}
+            ? <MarkdownText text={node.text} streaming={node.streaming === true} labels={MARKDOWN_LABELS} />
+            : <PlainText text={node.text} />}
         </div>
       )}
       {node.streaming && <span className={css.streamingMark}>生成中…</span>}
@@ -838,13 +838,18 @@ function TeamMessageCard({ node }: { node: Extract<ConversationNode, { kind: 'te
         </span>
         <span className={css.teamMessageType}>{TEAM_MESSAGE_TYPE_LABELS[node.messageType]}</span>
       </header>
-      <div className={css.teamMessageText}><MessageText text={node.text} /></div>
+      <div className={css.teamMessageText}><PlainText text={node.text} /></div>
     </article>
   )
 }
 
 function shortMemberId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id
+}
+
+/** 纯文本渲染（替代已移除的 primitives `MessageText`），保留换行。 */
+function PlainText({ text }: { text: string }): JSX.Element {
+  return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>
 }
 
 function ToolCard({ node }: { node: Extract<ConversationNode, { kind: 'tool' }> }): JSX.Element {

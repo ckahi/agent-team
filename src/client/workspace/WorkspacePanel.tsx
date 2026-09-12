@@ -318,7 +318,6 @@ function WorkspaceDiffDialog({
       open={target !== undefined}
       onClose={onClose}
       title={target?.change.path ?? '文件变更'}
-      closeLabel="关闭变更预览"
       className={css.workspaceDiffDialog ?? ''}
       headless
     >

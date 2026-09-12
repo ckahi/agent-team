@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { RpcId, type RpcRequest, type MuxFrame } from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { AgentTeamError } from '../src/domain/errors.js'
 import {
@@ -8,96 +7,87 @@ import {
   TeamInteractionBridge,
 } from '../src/runtime/team-interaction-bridge.js'
 
+type InteractionListener = (payload: unknown, next: () => Promise<unknown>) => unknown
+
 describe('TeamInteractionBridge', () => {
-  it('projects and answers an official question request, then waits for resolved', async () => {
-    const resolved = deferred<void>()
-    const sessionId = SessionId('session-1')
-    const rpcId = RpcId('question-rpc-1')
-    const respond = vi.fn(async () => ({ accepted: true as const }))
+  it('claims a team question via the waterfall and resolves it from the UI answer', async () => {
+    const { ctx, dispatch } = contextWithListeners()
     const onChange = vi.fn()
-    const bridge = new TeamInteractionBridge(contextWithMux([
-      {
-        rpcId,
-        payload: {
-          type: 'question/requested',
-          sessionId,
-          questions: [{
-            id: 'language',
-            question: '选择语言？',
-            options: [{ label: 'TypeScript', description: '推荐' }, { label: 'Rust' }],
-          }],
-        },
-      },
-      resolved.promise,
-      {
-        rpcId: RpcId('question-resolved-push'),
-        payload: {
-          type: 'question/resolved',
-          sessionId,
-          questionRpcId: rpcId,
-          outcome: 'answered',
-        },
-      },
-    ], respond), {
-      acceptsSession: id => id === String(sessionId),
+    const bridge = new TeamInteractionBridge(ctx, {
+      acceptsSession: id => id === 'session-1',
       onChange,
     })
-
     bridge.start()
-    await vi.waitFor(() => {
-      expect(bridge.list(String(sessionId))).toEqual([expect.objectContaining({
-        id: 'question:question-rpc-1',
-        kind: 'question',
-      })])
-    })
 
-    await bridge.respond(String(sessionId), 'question:question-rpc-1', {
+    const next = vi.fn()
+    const dispatched = dispatch('user-questions/request', {
+      questions: [{
+        id: 'language',
+        question: '选择语言？',
+        options: [{ label: 'TypeScript', description: '推荐' }, { label: 'Rust' }],
+      }],
+      agent: agentOf('session-1'),
+    }, next) as Promise<unknown>
+
+    await vi.waitFor(() => {
+      expect(bridge.list('session-1')).toEqual([expect.objectContaining({ kind: 'question' })])
+    })
+    const pendingId = bridge.list('session-1')[0]!.id
+    expect(onChange).toHaveBeenCalledWith('session-1')
+
+    await bridge.respond('session-1', pendingId, {
       kind: 'question',
       answers: [{ id: 'language', selected: ['TypeScript'] }],
     })
-    expect(respond).toHaveBeenCalledWith({
-      type: 'client-response',
-      rpcId,
-      result: {
-        ok: true,
-        value: {
-          sessionId,
-          answer: { answers: [{ id: 'language', selected: ['TypeScript'] }] },
-        },
-      },
+    await expect(dispatched).resolves.toEqual({
+      answers: [{ id: 'language', selected: ['TypeScript'] }],
     })
-    expect(bridge.list(String(sessionId))).toHaveLength(1)
-
-    resolved.resolve()
-    await vi.waitFor(() => { expect(bridge.list(String(sessionId))).toEqual([]) })
-    expect(onChange).toHaveBeenCalled()
+    expect(bridge.list('session-1')).toEqual([])
+    expect(next).not.toHaveBeenCalled()
     await bridge.dispose()
   })
 
-  it('uses the official one-shot approval outcome and drops stale requests', async () => {
-    const sessionId = SessionId('session-2')
-    const respond = vi.fn(async () => ({ accepted: false as const, reason: 'not-pending' as const }))
-    const bridge = new TeamInteractionBridge(contextWithMux([{
-      rpcId: RpcId('approval-rpc-1'),
-      payload: {
-        type: 'approval/requested',
-        sessionId,
-        approvalId: 'approval-1' as never,
-        toolName: 'bash',
-        reason: '需要访问工作区之外的路径',
-      },
-    }], respond), {
-      acceptsSession: () => true,
-      onChange: vi.fn(),
-    })
-
+  it('claims an approval, resolves the official outcome, and rejects stale responses', async () => {
+    const { ctx, dispatch } = contextWithListeners()
+    const bridge = new TeamInteractionBridge(ctx, { acceptsSession: () => true, onChange: vi.fn() })
     bridge.start()
-    await vi.waitFor(() => { expect(bridge.list(String(sessionId))).toHaveLength(1) })
-    await expect(bridge.respond(String(sessionId), 'approval:approval-1', {
+
+    const dispatched = dispatch('approval/request', {
+      agent: agentOf('session-2'),
+      toolName: 'bash',
+      reason: '需要访问工作区之外的路径',
+    }, vi.fn()) as Promise<unknown>
+
+    await vi.waitFor(() => { expect(bridge.list('session-2')).toHaveLength(1) })
+    const pendingId = bridge.list('session-2')[0]!.id
+
+    await bridge.respond('session-2', pendingId, { kind: 'approval', outcome: 'allowed-once' })
+    await expect(dispatched).resolves.toBe('allowed-once')
+    await expect(bridge.respond('session-2', pendingId, {
       kind: 'approval',
       outcome: 'allowed-once',
-    })).rejects.toMatchObject({ code: 'INTERACTION_NOT_PENDING' })
-    expect(bridge.list(String(sessionId))).toEqual([])
+    })).rejects.toMatchObject({ code: 'INTERACTION_NOT_FOUND' })
+    expect(bridge.list('session-2')).toEqual([])
+    await bridge.dispose()
+  })
+
+  it('delegates requests of foreign sessions to the built-in answerer chain', async () => {
+    const { ctx, dispatch } = contextWithListeners()
+    const bridge = new TeamInteractionBridge(ctx, {
+      acceptsSession: id => id === 'session-1',
+      onChange: vi.fn(),
+    })
+    bridge.start()
+
+    const next = vi.fn(async () => 'unavailable' as const)
+    const dispatched = dispatch('approval/request', {
+      agent: agentOf('session-9'),
+      toolName: 'bash',
+    }, next) as Promise<unknown>
+
+    await expect(dispatched).resolves.toBe('unavailable')
+    expect(next).toHaveBeenCalled()
+    expect(bridge.list('session-9')).toEqual([])
     await bridge.dispose()
   })
 })
@@ -117,38 +107,23 @@ describe('normalizeQuestionAnswers', () => {
   })
 })
 
-interface Deferred<T> {
-  promise: Promise<T>
-  resolve: (value: T) => void
+function agentOf(sessionId: string): { session: { id: ReturnType<typeof SessionId> } } {
+  return { session: { id: SessionId(sessionId) } }
 }
 
-function deferred<T = void>(): Deferred<T> {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
-}
-
-function contextWithMux(
-  steps: Array<RpcRequest<MuxFrame> | Promise<void>>,
-  respond: (message: unknown) => Promise<unknown>,
-): Context {
-  return {
-    apiProxy: {
-      events: {
-        async *mux(_request: unknown, signal: AbortSignal): AsyncIterable<RpcRequest<MuxFrame>> {
-          for (const step of steps) {
-            if (step instanceof Promise) await step
-            else yield step
-          }
-          if (!signal.aborted) {
-            await new Promise<void>(resolve => signal.addEventListener('abort', () => { resolve() }, { once: true }))
-          }
-        },
-      },
-      respond,
-    },
-    logger: {
-      error: vi.fn(),
+function contextWithListeners(): {
+  ctx: Context
+  dispatch: (name: string, payload: unknown, next: () => Promise<unknown>) => unknown
+} {
+  const listeners = new Map<string, InteractionListener>()
+  const ctx = {
+    on(name: string, listener: InteractionListener) {
+      listeners.set(name, listener)
+      return () => listeners.delete(name)
     },
   } as unknown as Context
+  return {
+    ctx,
+    dispatch: (name, payload, next) => listeners.get(name)?.(payload, next),
+  }
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { assembleContextFor, type AgentHandle } from '@deepseek-ai/dsh-agent'
+import { assembleContextFor, type Agent, type AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -100,13 +100,13 @@ export class AssistantBuilderRuntime {
   }
 
   async listConversations(): Promise<AssistantBuilderConversationListView> {
-    const headers = (await this.ctx.sessionPersistence.list())
-      .filter(header => (
-        isAssistantBuilderSessionId(String(header.id))
-        && !this.isConversationArchived(String(header.id))
+    const snapshots = (await this.ctx.sessionPersistence.list())
+      .filter(snapshot => (
+        isAssistantBuilderSessionId(String(snapshot.header.id))
+        && !this.isConversationArchived(String(snapshot.header.id))
       ))
     const active = this.handle?.agent.session
-    const ids = new Map(headers.map(header => [String(header.id), header]))
+    const ids = new Map(snapshots.map(snapshot => [String(snapshot.header.id), snapshot.header]))
     if (
       active !== undefined
       && isAssistantBuilderSessionId(String(active.id))
@@ -116,13 +116,23 @@ export class AssistantBuilderRuntime {
     }
     const summaries = await Promise.all([...ids.entries()].map(async ([sessionId, header]) => {
       const events = active !== undefined && String(active.id) === sessionId
-        ? active.events
-        : (await this.ctx.sessionPersistence.inspect(SessionId(sessionId))).events
+        ? active.snapshotEvents()
+        : await this.readPersistedEvents(SessionId(sessionId))
       return summarizeConversation(sessionId, header.createdAt, events)
     }))
     const items = summaries.filter(item => item.state !== 'new')
     items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
     return { items, total: items.length }
+  }
+
+  /** 0.1.5 起以只读句柄读取持久化事件（替代已移除的 `inspect`）。 */
+  private async readPersistedEvents(sessionId: SessionId): Promise<readonly SessionEvent[]> {
+    const handle = await this.ctx.sessionPersistence.open(sessionId, 'read')
+    try {
+      return (await handle.read()).events
+    } finally {
+      await handle.close()
+    }
   }
 
   async getDraft(): Promise<AssistantBuilderDraftView> {
@@ -162,13 +172,13 @@ export class AssistantBuilderRuntime {
       source: { kind: 'user' },
     })
     handle.agent.followup(message)
-    return this.project(sessionId, handle.agent.session.events, handle.agent.status)
+    return this.project(sessionId, handle.agent.session.snapshotEvents(), handle.agent.status)
   }
 
   async getConversation(rawSessionId: string): Promise<AssistantBuilderConversationView> {
     const sessionId = await this.requireExistingSessionId(rawSessionId)
     const handle = await this.ensureOnline(sessionId)
-    return this.project(sessionId, handle.agent.session.events, handle.agent.status)
+    return this.project(sessionId, handle.agent.session.snapshotEvents(), handle.agent.status)
   }
 
   async sendMessage(sessionId: string, rawContent: string): Promise<{ messageId: string }> {
@@ -379,11 +389,9 @@ export class AssistantBuilderRuntime {
         configuration.model,
       )
     }
-    const setup = async (agentCtx: Context): Promise<void> => {
+    const setup = async (agentCtx: Context, agent: Agent): Promise<void> => {
       await this.ctx.agentPresets.mount(agentCtx, configuration.agentPresetId)
       agentCtx.tools.presentAs('native')
-      const agent = agentCtx.agent
-      if (agent === undefined) throw new Error('Harness did not bind the unpublished Assistant Builder Agent')
       if (agent.session.header.cwd === undefined) {
         agentCtx.systemPrompt.variable('cwd', () => cwd)
       }
@@ -418,7 +426,7 @@ export class AssistantBuilderRuntime {
     }
     const agentOptions = { provider: configuration.provider, model: configuration.model }
     const persisted = (await this.ctx.sessionPersistence.list())
-      .some(header => String(header.id) === rawSessionId)
+      .some(snapshot => String(snapshot.header.id) === rawSessionId)
     if (!persisted && !allowCreate) {
       throw new AgentTeamError('INVALID_REQUEST', `Unknown Assistant Builder conversation '${rawSessionId}'`)
     }
@@ -541,7 +549,7 @@ export class AssistantBuilderRuntime {
     }
     if (sessionId === this.activeSessionId) return sessionId
     const exists = (await this.ctx.sessionPersistence.list())
-      .some(header => String(header.id) === sessionId)
+      .some(snapshot => String(snapshot.header.id) === sessionId)
     if (!exists) {
       throw new AgentTeamError('INVALID_REQUEST', `Unknown Assistant Builder conversation '${sessionId}'`)
     }
@@ -668,7 +676,7 @@ export class AssistantBuilderRuntime {
         })
         this.pendingDrafts.set(sessionId, {
           input,
-          preparedThroughSeq: exec.agent.session.events.at(-1)?.seq ?? -1,
+          preparedThroughSeq: exec.agent.session.snapshotEvents().at(-1)?.seq ?? -1,
         })
         return {
           name: input.name,
@@ -705,7 +713,7 @@ export class AssistantBuilderRuntime {
           )
         }
         if (!hasFreshAssistantDraftUserResponse(
-          exec.agent.session.events,
+          exec.agent.session.snapshotEvents(),
           pending.preparedThroughSeq,
         )) {
           throw new AgentTeamError(
@@ -747,7 +755,7 @@ export class AssistantBuilderRuntime {
     const sessionId = this.activeSessionId
     if (handle === undefined || sessionId === undefined || this.configuration === undefined || this.closing) return
     this.service.publishAssistantBuilderConversation(
-      this.project(sessionId, handle.agent.session.events, handle.agent.status),
+      this.project(sessionId, handle.agent.session.snapshotEvents(), handle.agent.status),
     )
   }
 }

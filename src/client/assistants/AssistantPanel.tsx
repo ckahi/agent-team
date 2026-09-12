@@ -20,6 +20,7 @@ import type {
   SkillCatalogView,
 } from '../../transport/contracts.js'
 import { callAgentTeam, subscribeAssistantBuilderConversation } from '../api.js'
+import { MARKDOWN_LABELS } from '../markdown-labels.js'
 import css from '../AgentTeam.module.css'
 import { shouldSubmitComposer } from '../keyboard.js'
 import { PERMISSION_LABELS } from '../labels.js'
@@ -495,7 +496,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
         {!loading && (draft !== undefined || conversation?.nodes.length === 0) && (
           <article className={`${conversationCss.messageNode} ${conversationCss.assistantMessage}`}>
             <div className={conversationCss.messageText}>
-              <MarkdownText text="你好，我是团队 Agent 小助手。告诉我你想创建什么样的助手，以及它主要负责什么；缺少的配置我会逐项询问你。" />
+              <MarkdownText text="你好，我是团队 Agent 小助手。告诉我你想创建什么样的助手，以及它主要负责什么；缺少的配置我会逐项询问你。" labels={MARKDOWN_LABELS} />
             </div>
           </article>
         )}

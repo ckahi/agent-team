@@ -26,12 +26,15 @@ describe('AssistantBuilderRuntime', () => {
       on: vi.fn(() => vi.fn()),
       sessionPersistence: {
         list: vi.fn(async () => [
-          { id: 'agent-team:assistant-builder:history-1', createdAt },
-          { id: 'agent-team:assistant-builder:legacy-empty', createdAt: createdAt + 1 },
+          { header: { id: 'agent-team:assistant-builder:history-1', createdAt }, revision: 'r1' },
+          { header: { id: 'agent-team:assistant-builder:legacy-empty', createdAt: createdAt + 1 }, revision: 'r2' },
         ]),
-        inspect: vi.fn(async (sessionId: string) => ({
-          meta: { createdAt },
-          events: sessionId.endsWith('legacy-empty') ? [] : events,
+        open: vi.fn(async (sessionId: string) => ({
+          header: { createdAt },
+          read: vi.fn(async () => ({
+            events: sessionId.endsWith('legacy-empty') ? [] : events,
+          })),
+          close: vi.fn(async () => {}),
         })),
       },
       workspaceRegistry: { archivedSessionIds: [] },
@@ -64,16 +67,16 @@ describe('AssistantBuilderRuntime', () => {
     const handles = [first, second]
     const cwdVariable = vi.fn()
     const restrict = vi.fn()
-    const resume = vi.fn(async (options: { setup?: (ctx: unknown) => Promise<void> }) => {
+    const resume = vi.fn(async (options: { setup?: (ctx: unknown, agent: unknown) => Promise<void> }) => {
       const handle = handles.shift()
       if (handle === undefined) throw new Error('Missing fake Agent handle')
-      await options.setup?.(fakeAgentContext(handle.agent, cwdVariable, restrict))
+      await options.setup?.(fakeAgentContext(handle.agent, cwdVariable, restrict), handle.agent)
       return handle
     })
-    const create = vi.fn(async (options: { setup?: (ctx: unknown) => Promise<void> }) => {
+    const create = vi.fn(async (options: { setup?: (ctx: unknown, agent: unknown) => Promise<void> }) => {
       const handle = handles.shift()
       if (handle === undefined) throw new Error('Missing fake Agent handle')
-      await options.setup?.(fakeAgentContext(handle.agent, cwdVariable, restrict))
+      await options.setup?.(fakeAgentContext(handle.agent, cwdVariable, restrict), handle.agent)
       return handle
     })
     const flush = vi.fn(async () => {})
@@ -107,7 +110,12 @@ describe('AssistantBuilderRuntime', () => {
         set: vi.fn(),
       },
       sessionPersistence: {
-        list: vi.fn(async () => [{ id: 'agent-team:assistant-builder' }]),
+        list: vi.fn(async () => [{ header: { id: 'agent-team:assistant-builder' }, revision: 'r1' }]),
+        open: vi.fn(async () => ({
+          header: {},
+          read: vi.fn(async () => ({ events: [] })),
+          close: vi.fn(async () => {}),
+        })),
       },
       sessions: { flush },
       logger: { warn: vi.fn() },
@@ -278,7 +286,7 @@ function fakeHandle() {
   const agent = {
     id: 'agent-team:assistant-builder',
     status: 'idle' as const,
-    session: { events: [], header: {} },
+    session: { snapshotEvents: () => [], header: {} },
     followup: vi.fn(),
     cancel: vi.fn(),
     whenIdle: vi.fn(async () => {}),

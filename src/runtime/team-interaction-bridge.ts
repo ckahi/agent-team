@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import {
-  RpcId,
-  type MuxFrame,
-  type RpcRequest,
-} from '@deepseek-ai/dsh-host-apiproxy'
+import type {
+  AskUserQuestionAnswer,
+  AskUserQuestionAnswerItem,
+  AskUserQuestionRequestEvent,
+} from '@deepseek-ai/dsh-user-questions/types'
+import type {
+  ApprovalOutcome,
+  ApprovalRequestEvent,
+} from '@deepseek-ai/dsh-user-approval/types'
 import { AgentTeamError } from '../domain/errors.js'
 import type {
   InteractionResponseInput,
@@ -13,27 +17,33 @@ import type {
   QuestionItemView,
 } from '../transport/contracts.js'
 
-type QuestionRequestedFrame = Extract<MuxFrame, { type: 'question/requested' }>
-type ApprovalRequestedFrame = Extract<MuxFrame, { type: 'approval/requested' }>
+/**
+ * DSH 0.1.5 用 Cordis waterfall（`user-questions/request` / `approval/request`）
+ * 承载人机交互请求；bridge 以 answerer 身份接管本插件团队会话的请求，
+ * 把待决交互投影给团队 UI，并在 UI 应答后回填 waterfall 结果。
+ */
+type PendingQuestionRecord = {
+  id: string
+  kind: 'question'
+  sessionId: string
+  questions: QuestionItemView[]
+  settle: (answer: AskUserQuestionAnswer) => boolean
+  cancel: () => void
+}
 
-type PendingInteractionRecord =
-  | {
-    id: string
-    kind: 'question'
-    rpcId: RpcRequest<MuxFrame>['rpcId']
-    sessionId: QuestionRequestedFrame['sessionId']
-    questions: QuestionItemView[]
-  }
-  | {
-    id: string
-    kind: 'approval'
-    rpcId: RpcRequest<MuxFrame>['rpcId']
-    sessionId: ApprovalRequestedFrame['sessionId']
-    approvalId: ApprovalRequestedFrame['approvalId']
-    toolName: string
-    callId?: string
-    reason?: string
-  }
+type PendingApprovalRecord = {
+  id: string
+  kind: 'approval'
+  sessionId: string
+  approvalId: string
+  toolName: string
+  callId?: string
+  reason?: string
+  settle: (outcome: ApprovalOutcome) => boolean
+  cancel: () => void
+}
+
+type PendingInteractionRecord = PendingQuestionRecord | PendingApprovalRecord
 
 export interface TeamInteractionScope {
   acceptsSession: (sessionId: string) => boolean
@@ -43,8 +53,7 @@ export interface TeamInteractionScope {
 export class TeamInteractionBridge {
   private readonly records = new Map<string, PendingInteractionRecord>()
   private readonly scopes = new Set<TeamInteractionScope>()
-  private abortController: AbortController | undefined
-  private consumeTask: Promise<void> | undefined
+  private disposers: (() => void) | undefined
 
   constructor(
     private readonly ctx: Context,
@@ -59,25 +68,29 @@ export class TeamInteractionBridge {
   }
 
   start(): void {
-    if (this.abortController !== undefined) return
-    const controller = new AbortController()
-    this.abortController = controller
-    this.consumeTask = this.consume(controller.signal).catch(error => {
-      if (!controller.signal.aborted) {
-        this.ctx.logger.error('agent-team: interaction mux stopped unexpectedly', error)
-      }
-    })
+    if (this.disposers !== undefined) return
+    const removeQuestions = this.ctx.on('user-questions/request', (request, next) =>
+      this.claimQuestion(request, next))
+    const removeApprovals = this.ctx.on('approval/request', (request, next) =>
+      this.claimApproval(request, next))
+    this.disposers = () => {
+      removeQuestions()
+      removeApprovals()
+    }
   }
 
   list(sessionId: string): PendingInteractionView[] {
     return [...this.records.values()]
-      .filter(record => String(record.sessionId) === sessionId)
+      .filter(record => record.sessionId === sessionId)
       .map(toView)
   }
 
   forget(sessionId: string): void {
     for (const [id, record] of this.records) {
-      if (String(record.sessionId) === sessionId) this.records.delete(id)
+      if (record.sessionId !== sessionId) continue
+      this.records.delete(id)
+      record.cancel()
+      this.notifyChange(sessionId)
     }
   }
 
@@ -90,118 +103,113 @@ export class TeamInteractionBridge {
     if (record === undefined) {
       throw new AgentTeamError('INTERACTION_NOT_FOUND', '该交互请求已结束或不存在')
     }
-    if (String(record.sessionId) !== sessionId || !this.acceptsSession(sessionId)) {
+    if (record.sessionId !== sessionId || !this.acceptsSession(sessionId)) {
       throw new AgentTeamError('INTERACTION_NOT_FOUND', '该交互请求不属于指定的会话')
     }
-    let value: unknown
     if (record.kind === 'question') {
       if (response.kind !== 'question') {
         throw new AgentTeamError('INTERACTION_INVALID', '交互响应类型与待处理请求不匹配')
       }
-      value = {
-        sessionId: record.sessionId,
-        answer: { answers: normalizeQuestionAnswers(record.questions, response.answers) },
+      const answers = normalizeQuestionAnswers(record.questions, response.answers)
+      if (!record.settle({ answers: answers as AskUserQuestionAnswerItem[] })) {
+        throw new AgentTeamError('INTERACTION_NOT_PENDING', '该交互请求已由其他页面处理')
       }
     } else {
       if (response.kind !== 'approval') {
         throw new AgentTeamError('INTERACTION_INVALID', '交互响应类型与待处理请求不匹配')
       }
-      value = {
-        sessionId: record.sessionId,
-        approvalId: record.approvalId,
-        outcome: response.outcome,
+      if (response.outcome !== 'allowed-once' && response.outcome !== 'rejected') {
+        throw new AgentTeamError('INTERACTION_INVALID', '未知的审批结论')
+      }
+      if (!record.settle(response.outcome)) {
+        throw new AgentTeamError('INTERACTION_NOT_PENDING', '该交互请求已由其他页面处理')
       }
     }
-    const receipt = await this.ctx.apiProxy.respond({
-      type: 'client-response',
-      rpcId: record.rpcId,
-      result: { ok: true, value },
-    })
-    if (receipt.accepted) return
-    if (receipt.reason === 'not-pending') {
-      this.records.delete(record.id)
-      this.notifyChange(String(record.sessionId))
-      throw new AgentTeamError('INTERACTION_NOT_PENDING', '该交互请求已由其他页面处理')
-    }
-    throw new AgentTeamError('INTERACTION_INVALID', 'Harness 拒绝了该交互响应')
+    this.records.delete(record.id)
+    this.notifyChange(record.sessionId)
   }
 
   async dispose(): Promise<void> {
-    const controller = this.abortController
-    this.abortController = undefined
-    controller?.abort()
-    await this.consumeTask
-    this.consumeTask = undefined
+    this.disposers?.()
+    this.disposers = undefined
+    for (const record of this.records.values()) record.cancel()
     this.records.clear()
   }
 
-  private async consume(signal: AbortSignal): Promise<void> {
-    const stream = this.ctx.apiProxy.events.mux({
-      rpcId: RpcId(randomUUID()),
-      payload: {},
-    }, signal)
-    for await (const envelope of stream) {
-      if (signal.aborted) return
-      this.accept(envelope)
-    }
-  }
-
-  private accept(envelope: RpcRequest<MuxFrame>): void {
-    const frame = envelope.payload
-    if (frame.type === 'question/requested') {
-      if (!this.acceptsSession(String(frame.sessionId))) return
-      const record: PendingInteractionRecord = {
-        id: `question:${String(envelope.rpcId)}`,
+  private claimQuestion(
+    request: AskUserQuestionRequestEvent,
+    next: () => Promise<AskUserQuestionAnswer>,
+  ): Promise<AskUserQuestionAnswer> {
+    const sessionId = request.agent === undefined ? undefined : String(request.agent.session.id)
+    if (sessionId === undefined || !this.acceptsSession(sessionId)) return next()
+    const questions = request.questions.map(toQuestionItemView)
+    return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
+      let settled = false
+      const record: PendingQuestionRecord = {
+        id: `question:${randomUUID()}`,
         kind: 'question',
-        rpcId: envelope.rpcId,
-        sessionId: frame.sessionId,
-        questions: frame.questions.map(question => ({
-          id: question.id,
-          question: question.question,
-          ...(question.detail === undefined ? {} : { detail: question.detail }),
-          ...(question.header === undefined ? {} : { header: question.header }),
-          ...(question.options === undefined ? {} : {
-            options: question.options.map(option => ({
-              label: option.label,
-              ...(option.description === undefined ? {} : { description: option.description }),
-            })),
-          }),
-          ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
-          ...(question.intent === undefined ? {} : { intent: { ...question.intent } }),
-        })),
+        sessionId,
+        questions,
+        settle: answer => {
+          if (settled) return false
+          settled = true
+          resolve(answer)
+          return true
+        },
+        cancel: () => {
+          if (settled) return
+          settled = true
+          reject(new Error('user question was cancelled before it was answered'))
+        },
       }
       this.records.set(record.id, record)
-      this.notifyChange(String(frame.sessionId))
-      return
-    }
-    if (frame.type === 'approval/requested') {
-      if (!this.acceptsSession(String(frame.sessionId))) return
-      const record: PendingInteractionRecord = {
-        id: `approval:${String(frame.approvalId)}`,
-        kind: 'approval',
-        rpcId: envelope.rpcId,
-        sessionId: frame.sessionId,
-        approvalId: frame.approvalId,
-        toolName: frame.toolName,
-        ...(frame.callId === undefined ? {} : { callId: String(frame.callId) }),
-        ...(frame.reason === undefined ? {} : { reason: frame.reason }),
-      }
-      this.records.set(record.id, record)
-      this.notifyChange(String(frame.sessionId))
-      return
-    }
-    if (frame.type === 'question/resolved') {
-      this.remove(`question:${String(frame.questionRpcId)}`, String(frame.sessionId))
-      return
-    }
-    if (frame.type === 'approval/resolved') {
-      this.remove(`approval:${String(frame.approvalId)}`, String(frame.sessionId))
-    }
+      this.notifyChange(sessionId)
+      request.signal?.addEventListener('abort', () => {
+        if (this.records.delete(record.id)) {
+          record.cancel()
+          this.notifyChange(sessionId)
+        }
+      }, { once: true })
+    })
   }
 
-  private remove(id: string, sessionId: string): void {
-    if (!this.records.delete(id)) return
-    this.notifyChange(sessionId)
+  private claimApproval(
+    request: ApprovalRequestEvent,
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
+    const sessionId = String(request.agent.session.id)
+    if (!this.acceptsSession(sessionId)) return next()
+    return new Promise<ApprovalOutcome>((resolve, reject) => {
+      let settled = false
+      const record: PendingApprovalRecord = {
+        id: `approval:${randomUUID()}`,
+        kind: 'approval',
+        sessionId,
+        approvalId: randomUUID(),
+        toolName: request.toolName,
+        ...(request.callId === undefined ? {} : { callId: String(request.callId) }),
+        ...(request.reason === undefined ? {} : { reason: request.reason }),
+        settle: outcome => {
+          if (settled) return false
+          settled = true
+          resolve(outcome)
+          return true
+        },
+        cancel: () => {
+          if (settled) return
+          settled = true
+          reject(new Error('approval was cancelled before it was decided'))
+        },
+      }
+      this.records.set(record.id, record)
+      this.notifyChange(sessionId)
+      request.signal?.addEventListener('abort', () => {
+        if (this.records.delete(record.id)) {
+          record.cancel()
+          this.notifyChange(sessionId)
+        }
+      }, { once: true })
+    })
   }
 
   private acceptsSession(sessionId: string): boolean {
@@ -258,6 +266,23 @@ export function normalizeQuestionAnswers(
       ...(custom === undefined || custom.length === 0 ? {} : { custom }),
     }
   })
+}
+
+function toQuestionItemView(question: AskUserQuestionRequestEvent['questions'][number]): QuestionItemView {
+  return {
+    id: question.id,
+    question: question.question,
+    ...(question.detail === undefined ? {} : { detail: question.detail }),
+    ...(question.header === undefined ? {} : { header: question.header }),
+    ...(question.options === undefined ? {} : {
+      options: question.options.map(option => ({
+        label: option.label,
+        ...(option.description === undefined ? {} : { description: option.description }),
+      })),
+    }),
+    ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
+    ...(question.intent === undefined ? {} : { intent: { ...question.intent } }),
+  }
 }
 
 function toView(record: PendingInteractionRecord): PendingInteractionView {

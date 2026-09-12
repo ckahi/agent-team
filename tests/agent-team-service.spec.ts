@@ -679,10 +679,7 @@ describe('AgentTeamService', () => {
     expect(service.listMessages(team.id).items[0]?.deliveryState).toBe('failed')
 
     memberAgent.followup.mockImplementation(message => {
-      memberAgent.session.events.push({
-        type: 'agent/inbox/spliced',
-        data: { inserted: [message] },
-      })
+      memberAgent.splice(message)
     })
     await runtime.messages.recover(service.getTeam(team.id))
 
@@ -930,7 +927,8 @@ interface FakeAgent {
   cancel: ReturnType<typeof vi.fn>
   whenIdle: ReturnType<typeof vi.fn>
   status: 'idle' | 'running'
-  session: { events: Array<{ type: string; data: { inserted: unknown[] } }> }
+  splice: (message: unknown) => void
+  session: { snapshotEvents(): Array<{ type: string; data: { inserted: unknown[] } }> }
 }
 
 interface RuntimeInternals {
@@ -947,13 +945,17 @@ function runtimeInternals(runtime: TeamRuntime): RuntimeInternals {
 }
 
 function fakeAgent(): FakeAgent {
-  const session: FakeAgent['session'] = { events: [] }
+  const log: Array<{ type: string; data: { inserted: unknown[] } }> = []
+  const session: FakeAgent['session'] = { snapshotEvents: () => [...log] }
   return {
     session,
     status: 'idle',
     followup: vi.fn(message => {
-      session.events.push({ type: 'agent/inbox/spliced', data: { inserted: [message] } })
+      log.push({ type: 'agent/inbox/spliced', data: { inserted: [message] } })
     }),
+    splice: message => {
+      log.push({ type: 'agent/inbox/spliced', data: { inserted: [message] } })
+    },
     cancel: vi.fn(),
     whenIdle: vi.fn(async () => {}),
   }

@@ -1,17 +1,7 @@
-import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
+import type { AssistantStreamRecord, ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TeamAggregate, TeamMessage } from '../domain/types.js'
 import type { ConversationNode, MemberConversationView } from '../transport/contracts.js'
-
-interface PartialAssistant {
-  id: string
-  seq: number
-  time: number
-  text: string
-  reasoning: string
-  reasoningStartedAt?: number
-  reasoningCompletedAt?: number
-}
 
 interface TeamProjectionContext {
   team: Pick<TeamAggregate, 'leaderSlotId' | 'members' | 'retiredSessions'>
@@ -32,12 +22,7 @@ export function projectContextUsage(
 
   for (const event of events) {
     if (event.type === 'request/context') contextWindow = event.data.contextWindow
-
-    const usage = event.type === 'assistant/chunk' && event.data.chunk.type === 'usage'
-      ? event.data.chunk.usage
-      : event.type === 'assistant/message'
-        ? event.data.usage
-        : undefined
+    const usage = event.type === 'assistant/message' ? event.data.usage : undefined
     if (usage !== undefined) latestUsage = usage
   }
 
@@ -67,7 +52,6 @@ export function projectConversation(
 } {
   const nodes: ConversationNode[] = []
   const tools = new Map<string, number>()
-  const partials = new Map<string, PartialAssistant>()
   const teamMessages = new Map(teamContext?.messages.map(message => [message.id, message]) ?? [])
 
   for (const event of events) {
@@ -92,61 +76,26 @@ export function projectConversation(
         }
         break
       }
-      case 'assistant/chunk': {
-        const key = `${event.data.turn}:${event.data.step}`
-        const current = partials.get(key) ?? {
-          id: `stream:${key}`,
-          seq: event.seq,
-          time: event.time,
-          text: '',
-          reasoning: '',
-        }
-        const chunk = event.data.chunk
-        if (chunk.type === 'text-delta') {
-          current.text += chunk.text
-          if (chunk.text.length > 0 && current.reasoningStartedAt !== undefined) {
-            current.reasoningCompletedAt ??= event.time
-          }
-        }
-        if (chunk.type === 'reasoning-delta') {
-          current.reasoning += chunk.text
-          if (chunk.text.length > 0) {
-            current.reasoningStartedAt ??= event.time
-            if (current.text.length > 0) current.reasoningCompletedAt ??= event.time
-          }
-        }
-        if (chunk.type === 'block-end' && chunk.block.type === 'text') {
-          current.text = chunk.block.text
-          if (current.reasoningStartedAt !== undefined) current.reasoningCompletedAt ??= event.time
-        }
-        if (chunk.type === 'block-end' && chunk.block.type === 'reasoning') {
-          current.reasoning = chunk.block.text
-          if (chunk.block.text.length > 0) {
-            current.reasoningStartedAt ??= current.time
-            current.reasoningCompletedAt ??= event.time
-          }
-        }
-        current.seq = event.seq
-        partials.set(key, current)
-        break
-      }
       case 'assistant/message': {
-        const partial = partials.get(`${event.data.turn}:${event.data.step}`)
-        partials.delete(`${event.data.turn}:${event.data.step}`)
         const text = textOf(event.data.message.content)
         const reasoning = reasoningOf(event.data.message.content)
-        if (text.length > 0 || reasoning.length > 0) nodes.push({
-          id: String(event.data.message.id),
-          kind: 'assistant',
-          seq: event.seq,
-          time: event.time,
-          text,
-          ...(reasoning.length === 0 ? {} : { reasoning }),
-          ...(partial?.reasoningStartedAt === undefined ? {} : {
-            reasoningStartedAt: partial.reasoningStartedAt,
-            reasoningCompletedAt: partial.reasoningCompletedAt ?? event.time,
-          }),
-        })
+        if (text.length > 0 || reasoning.length > 0) {
+          const timing = reasoningTimingOf(event.data.stream ?? [])
+          nodes.push({
+            id: String(event.data.message.id),
+            kind: 'assistant',
+            seq: event.seq,
+            time: event.time,
+            text,
+            ...(reasoning.length === 0 ? {} : { reasoning }),
+            ...(timing.startedAt === undefined ? {} : {
+              reasoningStartedAt: timing.startedAt,
+              ...(timing.completedAt === undefined ? {} : {
+                reasoningCompletedAt: timing.completedAt,
+              }),
+            }),
+          })
+        }
         break
       }
       case 'tool/call': {
@@ -218,28 +167,48 @@ export function projectConversation(
     }
   }
 
-  for (const partial of partials.values()) {
-    if (partial.text.length === 0 && partial.reasoning.length === 0) continue
-    nodes.push({
-      id: partial.id,
-      kind: 'assistant',
-      seq: partial.seq,
-      time: partial.time,
-      text: partial.text,
-      ...(partial.reasoning.length === 0 ? {} : { reasoning: partial.reasoning }),
-      ...(partial.reasoningStartedAt === undefined ? {} : {
-        reasoningStartedAt: partial.reasoningStartedAt,
-        ...(partial.reasoningCompletedAt === undefined ? {} : {
-          reasoningCompletedAt: partial.reasoningCompletedAt,
-        }),
-      }),
-      streaming: true,
-    })
-  }
   nodes.sort((left, right) => left.seq - right.seq)
   return {
     throughSeq: events.at(-1)?.seq ?? -1,
     nodes: nodes.slice(-limit),
+  }
+}
+
+/**
+ * 0.1.5 起流式 chunk 不再是会话事件，`assistant/message` 内嵌完整流记录；
+ * 由此还原 reasoning 起止时间（仅用于 UI 呈现，取首次出现时刻即可）。
+ */
+function reasoningTimingOf(stream: readonly AssistantStreamRecord[]): {
+  startedAt?: number
+  completedAt?: number
+} {
+  let startedAt: number | undefined
+  let completedAt: number | undefined
+  const noteReasoning = (time: number): void => { startedAt ??= time }
+  const noteText = (time: number): void => { if (startedAt !== undefined) completedAt ??= time }
+  for (const record of stream) {
+    if (record.type === 'chunk') {
+      const chunk = record.chunk
+      if (chunk.type === 'reasoning-delta') {
+        if (chunk.text.length > 0) noteReasoning(record.time)
+      } else if (chunk.type === 'text-delta') {
+        if (chunk.text.length > 0) noteText(record.time)
+      } else if (chunk.type === 'block-end') {
+        if (chunk.block.type === 'reasoning' && chunk.block.text.length > 0) {
+          noteReasoning(record.time)
+          noteText(record.time)
+        }
+        if (chunk.block.type === 'text') noteText(record.time)
+      }
+    } else if (record.type === 'reasoning-chunks') {
+      if (record.texts.some(text => text.length > 0)) noteReasoning(record.time0)
+    } else if (record.type === 'text-chunks') {
+      if (record.texts.some(text => text.length > 0)) noteText(record.time0)
+    }
+  }
+  return {
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(completedAt === undefined ? {} : { completedAt }),
   }
 }
 

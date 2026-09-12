@@ -1,7 +1,8 @@
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import type {} from '@deepseek-ai/dsh-host-apiproxy'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-user-approval'
+import type {} from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session'
@@ -22,13 +23,13 @@ import {
   DomainAssistantBuilderModelPreferenceStore,
 } from './storage/assistant-builder-preferences.js'
 import { DomainAgentTeamStore } from './storage/store.js'
+import { registerNativeDirectoryPicker } from './runtime/native-directory-picker.js'
 import { registerWebTransport } from './transport/web.js'
 
 export const name = 'agent-team'
 export const inject = [
   'agents',
   'agentPresets',
-  'apiProxy',
   'llm',
   'permissionPresets',
   'sessionPersistence',
@@ -54,6 +55,7 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
   let assistantBuilderRuntime: AssistantBuilderRuntime | undefined
   let transport: ReturnType<typeof registerWebTransport> | undefined
   let service: AgentTeamService | undefined
+  let disposeNativePicker: (() => void) | undefined
   try {
     const store = new DomainAgentTeamStore(domain)
     const assistantBuilderModelPreferences = new DomainAssistantBuilderModelPreferenceStore(
@@ -71,7 +73,9 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
     service.attachRuntime(runtime)
     service.attachAssistantBuilderRuntime(assistantBuilderRuntime)
     transport = registerWebTransport(ctx, config, service)
+    disposeNativePicker = registerNativeDirectoryPicker(ctx)
     ctx.effect(() => async () => {
+      disposeNativePicker?.()
       transport?.dispose()
       await service?.disposeWorkspaceTracking()
       await assistantBuilderRuntime?.dispose()
@@ -83,6 +87,7 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
     runtime.startInteractionBridge()
     service.startWorkspaceTracking()
   } catch (error) {
+    disposeNativePicker?.()
     transport?.dispose()
     await service?.disposeWorkspaceTracking()
     await assistantBuilderRuntime?.dispose()

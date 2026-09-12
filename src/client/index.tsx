@@ -6,9 +6,16 @@ import {
   AgentTeamSettingsSection,
   type WorkspaceChoice,
 } from './components.js'
+import { AGENT_TEAM_PICK_DIRECTORY_PATH } from '../transport/contracts.js'
 
 export const name = 'agent-team-client'
 export const inject = ['slots', 'workspaces']
+
+interface PickDirectoryResponse {
+  ok: boolean
+  path?: string | null
+  message?: string
+}
 
 export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
@@ -23,9 +30,13 @@ export function apply(ctx: ClientContext): void {
       label: '团队',
       inject: (): { pickWorkspace: () => Promise<WorkspaceChoice | null> } => ({
         pickWorkspace: async () => {
-          const path = await ctx.workspaces.pickDirectory()
-          if (path === null) return null
-          const workspace = await ctx.workspaces.create({ path })
+          const response = await fetch(AGENT_TEAM_PICK_DIRECTORY_PATH, { method: 'POST' })
+          const result = await response.json() as PickDirectoryResponse
+          if (!result.ok) {
+            throw new Error(result.message ?? 'directory picker failed')
+          }
+          if (result.path === null || result.path === undefined) return null
+          const workspace = await ctx.workspaces.create({ path: result.path })
           return {
             id: workspace.workspaceId,
             path: workspace.path,

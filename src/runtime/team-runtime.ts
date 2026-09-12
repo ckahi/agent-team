@@ -108,10 +108,13 @@ export class TeamRuntime {
     const team = this.service.getTeam(teamId)
     const conversations = await Promise.all(Object.values(team.members).map(async member => {
       const owned = this.owned.get(member.sessionId)
-      let events = owned?.handle.agent.session.events
-      if (events === undefined) {
+      const live = owned?.handle.agent.session.snapshotEvents()
+      let events: readonly SessionEvent[]
+      if (live !== undefined) {
+        events = live
+      } else {
         try {
-          events = (await this.ctx.sessionPersistence.inspect(SessionId(member.sessionId))).events
+          events = await this.readPersistedEvents(SessionId(member.sessionId))
         } catch {
           events = []
         }
@@ -123,6 +126,16 @@ export class TeamRuntime {
       teamId: team.id,
       revision: team.revision,
       conversations,
+    }
+  }
+
+  /** 0.1.5 起以只读句柄读取持久化事件（替代已移除的 `inspect`）。 */
+  private async readPersistedEvents(sessionId: SessionId): Promise<readonly SessionEvent[]> {
+    const handle = await this.ctx.sessionPersistence.open(sessionId, 'read')
+    try {
+      return (await handle.read()).events
+    } finally {
+      await handle.close()
     }
   }
 
@@ -141,7 +154,7 @@ export class TeamRuntime {
       this.service.publishConversation(
         teamId,
         current.revision,
-        this.projectMemberConversation(current, currentMember, owned.handle.agent.session.events),
+        this.projectMemberConversation(current, currentMember, owned.handle.agent.session.snapshotEvents()),
       )
     }
   }
@@ -270,7 +283,7 @@ export class TeamRuntime {
       const team = this.service.getTeam(teamId)
       const member = team.members[slotId]
       if (member === undefined) throw new AgentTeamError('MEMBER_NOT_FOUND', `Unknown member '${slotId}'`)
-      const materialized = new Set((await this.ctx.sessionPersistence.list()).map(header => String(header.id)))
+      const materialized = new Set((await this.ctx.sessionPersistence.list()).map(snapshot => String(snapshot.header.id)))
       try {
         await this.ensureMemberOnline(team, member, materialized.has(member.sessionId))
         const current = this.service.getTeam(teamId)
@@ -655,7 +668,7 @@ export class TeamRuntime {
       this.service.publishConversation(
         team.id,
         team.revision,
-        this.projectMemberConversation(team, member, owned.handle.agent.session.events),
+        this.projectMemberConversation(team, member, owned.handle.agent.session.snapshotEvents()),
       )
     } catch (error) {
       this.ctx.logger.warn('agent-team: failed to publish interaction update', error)
@@ -701,7 +714,7 @@ export class TeamRuntime {
     if (workspace === undefined || await workspace.status() !== 'ok' || workspace.path !== team.workspacePath) {
       throw new AgentTeamError('WORKSPACE_UNAVAILABLE', `Workspace '${team.workspaceId}' is unavailable or changed`)
     }
-    const materialized = new Set((await this.ctx.sessionPersistence.list()).map(header => String(header.id)))
+    const materialized = new Set((await this.ctx.sessionPersistence.list()).map(snapshot => String(snapshot.header.id)))
     await mapConcurrent(Object.values(team.members), this.config.runtimeConcurrency, async member => {
       if (member.desiredState === 'removing') return
       await this.ensureMemberOnline(team, member, materialized.has(member.sessionId))
@@ -742,7 +755,7 @@ export class TeamRuntime {
         },
         assembled: undefined,
       }
-      const setup = async (agentCtx: Context): Promise<void> => {
+      const setup = async (agentCtx: Context, agent: Agent): Promise<void> => {
         await this.ctx.agentPresets.mount(agentCtx, member.assistantSnapshot.agentPresetId)
         installModelSelection(agentCtx, modelSelection)
         const identitySection = `agent-team:identity:${member.id}`
@@ -776,8 +789,6 @@ export class TeamRuntime {
             this.commands.sendMemberMessage(team.id, member.id, recipientSlotId, content, type)
           ),
         })
-        const agent = agentCtx.agent
-        if (agent === undefined) throw new Error('Harness did not bind the unpublished agent context')
         const selectedMcpServers = new Set(member.assistantSnapshot.mcpServers)
         const mcpTools = agentCtx.tools.schemas(agent).flatMap(tool => {
           const serverName = mcpServerFromToolName(tool.name)
