@@ -31,6 +31,24 @@ import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
 import { WorkspacePanel } from '../workspace/WorkspacePanel.js'
 
+const runtimeStateClass: Readonly<Record<string, string | undefined>> = {
+  offline: css.memberRuntimeOffline,
+  starting: css.memberRuntimeStarting,
+  idle: css.memberRuntimeIdle,
+  running: css.memberRuntimeRunning,
+  waiting_approval: css.memberRuntimeWaiting,
+  error: css.memberRuntimeError,
+}
+
+const statusDotStateClass: Readonly<Record<string, string | undefined>> = {
+  offline: css.statusOffline,
+  starting: css.statusStarting,
+  idle: css.statusIdle,
+  running: css.statusRunning,
+  waiting_approval: css.statusWaiting,
+  error: css.statusError,
+}
+
 export function TeamPanel({
   catalog,
   assistants,
@@ -279,7 +297,7 @@ function TeamWorkbench({
                 <span className={css.memberAvatar}>{member.displayName.slice(0, 1).toUpperCase()}</span>
                 <span className={css.memberTabName}>{member.displayName}</span>
                 {member.role === 'leader' && <CrownIcon size={15} className={css.leaderCrown} title="Leader" />}
-                <span className={`${css.statusDot} ${conversation?.status === 'running' ? css.statusRunning : css.statusIdle}`} />
+                <span className={`${css.statusDot} ${statusDotStateClass[conversation?.status ?? 'offline'] ?? css.statusIdle}`} />
               </button>
               {member.role !== 'leader' && (
                 <span className={css.memberTabActions}>
@@ -846,8 +864,8 @@ function TeamCard({
               <span className={css.memberTileAvatar}>{member.displayName.slice(0, 1).toUpperCase()}</span>
               <span className={css.memberTileCopy}>
                 <span className={css.memberTileName} title={member.displayName}>{member.displayName}</span>
-                <span className={css.memberRuntime}>
-                  <span className={`${css.statusDot} ${member.lastRuntimeState === 'running' ? css.statusRunning : css.statusIdle}`} />
+                <span className={`${css.memberRuntime} ${runtimeStateClass[member.lastRuntimeState] ?? css.memberRuntimeIdle}`}>
+                  <span className={`${css.statusDot} ${statusDotStateClass[member.lastRuntimeState] ?? css.statusIdle}`} />
                   {memberStatusLabel(member.lastRuntimeState)}
                 </span>
               </span>

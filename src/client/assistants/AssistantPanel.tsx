@@ -452,7 +452,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
       </aside>
       <div className={css.assistantBuilderMain}>
         <div className={css.assistantBuilderRuntime}>
-        <span className={css.assistantBuilderRuntimeState}>
+        <span className={`${css.assistantBuilderRuntimeState} ${running ? css.memberRuntimeRunning : css.memberRuntimeIdle}`}>
           <span className={`${css.statusDot} ${running ? css.statusRunning : css.statusIdle}`} aria-hidden="true" />
           <span>{runtimeLabel}</span>
         </span>
