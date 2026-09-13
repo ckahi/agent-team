@@ -118,7 +118,7 @@ AssistantBuilder 也用同一个桥（`registerScope` 注册自己的会话范�
 
 **流转**：成员经 `team_update_task` 推进自己的任务（只能改 `ownerSlotId === 自己` 的）；leader 可改任何任务且是唯一能改派 owner 的人。更新时自动路由通知（113–135 行）：leader 改派 → 给新 owner 发 `reassignmentContent` 指令（附原结果/错误）；成员更新 → 给 leader 发通知，类型按状态映射（completed→result、failed/cancelled→warning、blocked→question、其余→progress）。协作循环即：leader 派 → 成员做并回报 → leader 被通知唤醒再决策。任务每次更新 `revision + 1`，状态写盘与通知入队在**同一事务**完成，通知失败留在 outbox 由 `recover()` 重投，不存在"状态改了通知丢了"的半态。
 
-**两个现状要知道**：① schema 状态枚举是 `running`/`blocked`，但 `labels.ts` 的 `TASK_STATE_LABELS` 写的是 `in_progress` 且没有 blocked 映射——任务板 UI 上这两个状态会显示英文原文，是既有 bug，动任务功能时顺手修；② `dependencyIds` 永远是 `[]`、`FileScopeLease`（文件租约）只在建队时初始化为空——两者都是预留未实现，schema 已铺好，做文件级冲突防护缺的只是获取/释放/校验逻辑。
+**两个现状要知道**：① 任务状态枚举以 `src/domain/schemas.ts` 的 `teamTaskSchema.status` 为准，`labels.ts` 的 `TASK_STATE_LABELS` 必须与之对齐（`running` 译「进行中」而非「运行中」，避免与成员状态混淆；`blocked` 译「受阻」），`tests/client-labels.spec.ts` 有文案表 key 与 schema 枚举同步的守护测试——新增/调整任务状态时两处要一起改；② `dependencyIds` 永远是 `[]`、`FileScopeLease`（文件租约）只在建队时初始化为空——两者都是预留未实现，schema 已铺好，做文件级冲突防护缺的只是获取/释放/校验逻辑。
 
 ## 7. 传输层（src/transport/）
 

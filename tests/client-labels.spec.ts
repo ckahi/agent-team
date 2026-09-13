@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { PERMISSION_LABELS, TASK_STATE_LABELS, taskStatusLabel } from '../src/client/labels.js'
+import { teamTaskSchema } from '../src/domain/schemas.js'
 
 describe('taskStatusLabel', () => {
   it.each([
     ['pending', '待处理'],
     ['assigned', '已分配'],
-    ['in_progress', '进行中'],
+    ['running', '进行中'],
+    ['blocked', '受阻'],
     ['completed', '已完成'],
     ['failed', '失败'],
     ['cancelled', '已取消'],
@@ -21,11 +23,17 @@ describe('taskStatusLabel', () => {
     expect(TASK_STATE_LABELS).toEqual({
       pending: '待处理',
       assigned: '已分配',
-      in_progress: '进行中',
+      running: '进行中',
+      blocked: '受阻',
       completed: '已完成',
       failed: '失败',
       cancelled: '已取消',
     })
+  })
+
+  it('keeps TASK_STATE_LABELS keys in sync with the domain schema status enum', () => {
+    const schemaStatuses = [...teamTaskSchema.shape.status.options].sort()
+    expect(Object.keys(TASK_STATE_LABELS).sort()).toEqual(schemaStatuses)
   })
 
   it('keeps PERMISSION_LABELS intact', () => {

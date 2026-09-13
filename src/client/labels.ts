@@ -1,7 +1,8 @@
 export const TASK_STATE_LABELS: Readonly<Record<string, string>> = {
   pending: '待处理',
   assigned: '已分配',
-  in_progress: '进行中',
+  running: '进行中',
+  blocked: '受阻',
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消',
