@@ -110,6 +110,16 @@ AssistantBuilder 也用同一个桥（`registerScope` 注册自己的会话范�
 
 "团队 Agent 小助手"是设置页里帮你写助手模板的独立 agent 会话。安全模型是三重锁：`allowedTools` 白名单（get_catalog/prepare/commit/ask_user_question）+ 只读文件工具（read/read_image/glob/grep）+ `tools.restrict({ deny })` 动态 deny 其余工具。提交草稿有 `hasFreshAssistantDraftUserResponse` 门——**必须 prepare 之后有一条真实用户消息**才允许 commit，防止模型自己写自己批。改 builder 行为时这三层要一起看。
 
+### 6.7 共享任务板：产生与状态流转（team-command-handler.ts）
+
+"共享"指所有成员的模型工具读到的是**同一份聚合数据**：任务板存在 `TeamAggregate.tasks`，任何成员调 `team_get_task_board` 都拿当前聚合的全量任务。UI 的任务板（TeamPanel）只是这份聚合的只读投影。
+
+**产生**：唯一入口是 leader 调 `team_create_task`（`createTask` 33 行硬校验 `creatorSlotId !== leaderSlotId` 即拒）。状态由是否指定负责人决定：不指定 → `pending`；指定 → `assigned`。指定 owner 且非 leader 本人时，同一笔 `updateRuntimeTeam` 事务里写任务 + 把 `assignmentContent` 指令消息放进 outbox，随后派发器投给负责人会话（`agent.followup`，文本带标题/描述/fileScopes），返回的 `deliveryState` 告知送达还是排队。
+
+**流转**：成员经 `team_update_task` 推进自己的任务（只能改 `ownerSlotId === 自己` 的）；leader 可改任何任务且是唯一能改派 owner 的人。更新时自动路由通知（113–135 行）：leader 改派 → 给新 owner 发 `reassignmentContent` 指令（附原结果/错误）；成员更新 → 给 leader 发通知，类型按状态映射（completed→result、failed/cancelled→warning、blocked→question、其余→progress）。协作循环即：leader 派 → 成员做并回报 → leader 被通知唤醒再决策。任务每次更新 `revision + 1`，状态写盘与通知入队在**同一事务**完成，通知失败留在 outbox 由 `recover()` 重投，不存在"状态改了通知丢了"的半态。
+
+**两个现状要知道**：① schema 状态枚举是 `running`/`blocked`，但 `labels.ts` 的 `TASK_STATE_LABELS` 写的是 `in_progress` 且没有 blocked 映射——任务板 UI 上这两个状态会显示英文原文，是既有 bug，动任务功能时顺手修；② `dependencyIds` 永远是 `[]`、`FileScopeLease`（文件租约）只在建队时初始化为空——两者都是预留未实现，schema 已铺好，做文件级冲突防护缺的只是获取/释放/校验逻辑。
+
 ## 7. 传输层（src/transport/）
 
 `web.ts` 注册三个 exact 路由：RPC 主入口、SSE 事件流（心跳 `sseHeartbeatMs`）、Workspace 文件上传。`contracts.ts` 是两端的**单一事实源**：加方法 = `AGENT_TEAM_METHODS` 加名字 + `AgentTeamRequestMap` 加 payload/result 类型 + web.ts 分发 + client/api.ts 封装。跨端枚举/RPC 参数形态不一致是**无报错静默失败**（空数组单测会掩盖），两边类型都从 contracts 推导，别在 client 里手写结构。
