@@ -26,7 +26,7 @@ import {
 } from '../member-visibility.js'
 import { AnimatedModal, Empty, Field } from '../shared.js'
 import { openTeam } from '../store.js'
-import { isTeamExecuting } from '../team-status.js'
+import { canRetryTeamStart, isTeamExecuting } from '../team-status.js'
 import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
 import { WorkspacePanel } from '../workspace/WorkspacePanel.js'
@@ -831,6 +831,19 @@ function TeamCard({
     }
   }
 
+  async function retryStart(): Promise<void> {
+    setBusy(true)
+    try {
+      await callAgentTeam('team.start', { id: team.id }, team.revision)
+      setError(undefined)
+      await onChanged()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       <article className={`${css.card} ${compact ? css.managementCard : ''}`}>
@@ -839,6 +852,19 @@ function TeamCard({
           <strong className={css.teamCardName}>{team.name}</strong>
           <span className={css.teamCardWorkspace}>{team.workspacePath}</span>
         </div>
+        {canRetryTeamStart(team.state) && (
+          <span className={css.teamCardErrorActions}>
+            <span className={`${css.badge} ${css.badgeError}`}>启动失败</span>
+            <button
+              type="button"
+              className={css.retryStartButton}
+              disabled={busy}
+              onClick={() => { void retryStart() }}
+            >
+              {busy ? '启动中…' : '重试启动'}
+            </button>
+          </span>
+        )}
         {executing && <span className={`${css.badge} ${css.badgeSuccess ?? ''}`}>任务执行中</span>}
       </header>
 

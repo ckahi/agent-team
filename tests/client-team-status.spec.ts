@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTeamExecuting } from '../src/client/team-status.js'
+import { canRetryTeamStart, isTeamExecuting } from '../src/client/team-status.js'
 
 describe('team execution status', () => {
   it('does not treat an idle or merely available team as executing', () => {
@@ -22,4 +22,17 @@ describe('team execution status', () => {
       tasks: { task: { status: 'running' } },
     })).toBe(true)
   })
+})
+
+describe('canRetryTeamStart', () => {
+  it('offers the retry entry only for a team in the error state', () => {
+    expect(canRetryTeamStart('error')).toBe(true)
+  })
+
+  it.each(['draft', 'starting', 'active', 'deleting', 'delete_blocked', 'ownership_conflict'])(
+    'does not offer the retry entry for a %s team',
+    state => {
+      expect(canRetryTeamStart(state)).toBe(false)
+    },
+  )
 })

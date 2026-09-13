@@ -8,3 +8,7 @@ export function isTeamExecuting(team: TeamExecutionView): boolean {
     member.lastRuntimeState === 'running' || member.lastRuntimeState === 'waiting_approval'
   )) || Object.values(team.tasks).some(task => task.status === 'running')
 }
+
+export function canRetryTeamStart(state: string): boolean {
+  return state === 'error'
+}

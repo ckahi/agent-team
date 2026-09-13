@@ -578,13 +578,13 @@ export class AgentTeamService extends Service {
     const team = requireTeam(this.store, teamId)
     assertTeamMutable(team)
     assertRevision('team', team.revision, options.expectedRevision)
-    if (team.state !== 'draft' && team.state !== 'active') {
+    if (team.state !== 'draft' && team.state !== 'active' && team.state !== 'error') {
       throw new AgentTeamError('TEAM_NOT_ACTIVE', `Cannot add a member while team is '${team.state}'`)
     }
     const assistant = requireAssistant(this.store, input.assistantId)
     const displayName = assistant.name
     const now = new Date().toISOString()
-    const member = createMemberSlot(assistant, displayName, 'member', now, team.state === 'draft' ? 'offline' : 'online')
+    const member = createMemberSlot(assistant, displayName, 'member', now, team.state === 'active' ? 'online' : 'offline')
     const next = await this.store.updateTeam(teamId, current => ({
       ...current,
       members: { ...current.members, [member.id]: member },
@@ -593,7 +593,7 @@ export class AgentTeamService extends Service {
     }))
     await this.activity('team.member_added', teamId, next.revision, `Member ${displayName} added`)
     this.publish('team', teamId, next.revision, 'team.member_added')
-    if (next.state !== 'draft') return this.requireRuntime().activateMember(teamId, member.id)
+    if (next.state === 'active') return this.requireRuntime().activateMember(teamId, member.id)
     return next
   }
 

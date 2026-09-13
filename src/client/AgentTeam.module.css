@@ -1876,6 +1876,34 @@ textarea.input {
   color: var(--dsw-alias-label-secondary);
 }
 
+.teamCardErrorActions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.retryStartButton {
+  padding: 1px 9px;
+  border: 1px solid var(--dsw-alias-state-error-secondary);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-state-error-primary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.retryStartButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+.retryStartButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .taskList {
   display: flex;
   flex-direction: column;

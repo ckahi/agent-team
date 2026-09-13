@@ -595,6 +595,92 @@ describe('AgentTeamService', () => {
     }))
   })
 
+  it('adds a member to an error team without activating it', async () => {
+    const { ctx, service, store } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Stalled Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    const ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).ensureMemberOnline = ensureMemberOnline
+
+    const added = await service.addMember(team.id, {
+      assistantId: assistant.id,
+    }, { expectedRevision: team.revision })
+
+    const second = Object.values(added.members).find(value => value.id !== team.leaderSlotId)!
+    expect(added.state).toBe('error')
+    expect(second.desiredState).toBe('offline')
+    expect(service.getTeam(team.id).revision).toBe(team.revision + 1)
+    expect(ensureMemberOnline).not.toHaveBeenCalled()
+  })
+
+  it('still refuses to add members while a team is starting', async () => {
+    const { service, store } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Starting Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'starting' }))
+    const team = service.getTeam(draft.id)
+
+    await expect(service.addMember(team.id, { assistantId: assistant.id }))
+      .rejects.toMatchObject({ code: 'TEAM_NOT_ACTIVE' })
+  })
+
+  it('retries starting an error team back to active', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Restartable Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    const ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).ensureMemberOnline = ensureMemberOnline
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(team.id, { expectedRevision: team.revision })
+
+    expect(started.state).toBe('active')
+    expect(Object.values(started.members).every(member => member.desiredState === 'online')).toBe(true)
+    expect(ensureMemberOnline).toHaveBeenCalledOnce()
+  })
+
+  it('allows changing the leader of an error team', async () => {
+    const { service, store } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Error Succession Team',
+      workspaceId: 'workspace-1',
+      members: [
+        { assistantId: assistant.id, role: 'leader' },
+        { assistantId: assistant.id, role: 'member' },
+      ],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const successor = Object.values(team.members).find(value => value.id !== team.leaderSlotId)!
+
+    const changed = await service.changeLeader(team.id, successor.id, { expectedRevision: team.revision })
+
+    expect(changed.leaderSlotId).toBe(successor.id)
+    expect(changed.state).toBe('error')
+  })
+
   it('atomically queues an assigned task and wakes its owner', async () => {
     const { ctx, service, store } = createHarness()
     const assistant = await service.createAssistant(assistantInput())
