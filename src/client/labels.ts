@@ -29,3 +29,14 @@ export function memberStatusLabel(status: string): string {
 export function taskStatusLabel(status: string): string {
   return TASK_STATE_LABELS[status] ?? status
 }
+
+export const TEAM_START_ERROR_HINTS: Readonly<Record<string, string>> = {
+  PRESET_PROMPT_INCOMPATIBLE: '成员助手模板的 Agent Preset 替换了团队身份/名册提示段：请在助手库改用兼容预设，再点「重试启动」——重试将以助手库最新配置重新装配成员。',
+}
+
+const TEAM_START_ERROR_FALLBACK = '请检查 Workspace 是否可用、模型与网络配置后重试；重试将以助手库最新配置重新装配成员。'
+
+export function teamStartErrorHint(code?: string): string {
+  if (code === undefined) return TEAM_START_ERROR_FALLBACK
+  return TEAM_START_ERROR_HINTS[code] ?? TEAM_START_ERROR_FALLBACK
+}

@@ -681,6 +681,224 @@ describe('AgentTeamService', () => {
     expect(changed.state).toBe('error')
   })
 
+  it('refreshes member snapshots from current templates when starting an error team', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Stale Snapshot Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    await service.updateAssistant(assistant.id, { name: 'Codex Lead v2', agentPresetId: 'standard' })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(team.id, { expectedRevision: team.revision })
+    const member = started.members[team.leaderSlotId]!
+
+    expect(started.state).toBe('active')
+    expect(member.assistantSnapshot.agentPresetId).toBe('standard')
+    expect(member.assistantSnapshot.revision).toBe(2)
+    expect(member.displayName).toBe('Codex Lead v2')
+  })
+
+  it('refreshes snapshots when starting a draft team after template edits', async () => {
+    const { ctx, service } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Fresh Draft Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await service.updateAssistant(assistant.id, { agentPresetId: 'standard' })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+    const member = started.members[started.leaderSlotId]!
+
+    expect(started.state).toBe('active')
+    expect(member.assistantSnapshot.agentPresetId).toBe('standard')
+  })
+
+  it('skips the snapshot write when templates are unchanged', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Unchanged Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+
+    expect(started.revision).toBe(draft.revision + 2)
+    expect(store.listActivities(draft.id).map(activity => activity.kind)).not.toContain('team.snapshots_refreshed')
+  })
+
+  it('fails start and names the member when its assistant is missing', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Missing Template Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    await store.deleteAssistant(assistant.id)
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    await expect(service.startTeam(team.id, { expectedRevision: team.revision }))
+      .rejects.toMatchObject({ code: 'ASSISTANT_NOT_FOUND' })
+
+    const failed = service.getTeam(team.id)
+    expect(failed.state).toBe('error')
+    expect(failed.lastError?.code).toBe('ASSISTANT_NOT_FOUND')
+    expect(failed.lastError?.message).toContain(member.displayName)
+  })
+
+  it('records lastError on start failure and clears it after a successful retry', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Retry Cycle Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    const failure = new AgentTeamError(
+      'PRESET_PROMPT_INCOMPATIBLE',
+      `成员“${assistant.name}”启动失败：Preset 'minimal' replaced Agent Team prompt sections`,
+    )
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => { throw failure })
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    await expect(service.startTeam(team.id, { expectedRevision: team.revision }))
+      .rejects.toMatchObject({ code: 'PRESET_PROMPT_INCOMPATIBLE' })
+
+    const failed = service.getTeam(team.id)
+    expect(failed.state).toBe('error')
+    expect(failed.lastError).toMatchObject({ code: 'PRESET_PROMPT_INCOMPATIBLE', message: failure.message })
+    expect(typeof failed.lastError?.failedAt).toBe('string')
+
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    const retried = await service.startTeam(team.id, { expectedRevision: failed.revision })
+
+    expect(retried.state).toBe('active')
+    expect(retried.lastError).toBeUndefined()
+  })
+
+  it('preserves member-level overrides across a snapshot refresh', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Override Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).owned.set(member.sessionId, fakeOwned(fakeAgent()))
+    await service.setMemberPermissionPreset(team.id, member.id, 'workspace-write')
+    await service.setMemberReasoningEffort(team.id, member.id, 'high')
+    await service.updateAssistant(assistant.id, { agentPresetId: 'standard' })
+    runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(team.id, { expectedRevision: service.getTeam(team.id).revision })
+    const refreshed = started.members[member.id]!
+
+    expect(refreshed.permissionPresetId).toBe('workspace-write')
+    expect(refreshed.reasoningEffort).toBe('high')
+    expect(refreshed.assistantSnapshot.agentPresetId).toBe('standard')
+    expect(refreshed.assistantSnapshot.permissionPresetId).toBe('standard')
+  })
+
+  it('refreshes snapshots on reset restart and clears lastError', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Reset Refresh Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({
+      ...team,
+      state: 'error',
+      lastError: { code: 'PRESET_PROMPT_INCOMPATIBLE', message: 'stale failure', failedAt: '2026-09-13T00:00:00.000Z' },
+    }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    await service.updateAssistant(assistant.id, { agentPresetId: 'standard' })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).owned.set(member.sessionId, fakeOwned(fakeAgent()))
+
+    const reset = await service.resetTeam(team.id, team.name)
+
+    expect(reset.state).toBe('active')
+    expect(reset.members[member.id]?.assistantSnapshot.agentPresetId).toBe('standard')
+    expect(reset.lastError).toBeUndefined()
+  })
+
+  it('keeps snapshots stale on recoverTeams but clears lastError when recovery succeeds', async () => {
+    const { ctx, service, store } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Recover Stale Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({
+      ...team,
+      state: 'error',
+      lastError: { message: 'stale failure', failedAt: '2026-09-13T00:00:00.000Z' },
+    }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    await service.updateAssistant(assistant.id, { agentPresetId: 'standard' })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    await runtime.recoverTeams()
+
+    const recovered = service.getTeam(team.id)
+    expect(recovered.state).toBe('active')
+    expect(recovered.members[member.id]?.assistantSnapshot.agentPresetId).toBe('default')
+    expect(recovered.lastError).toBeUndefined()
+  })
+
   it('atomically queues an assigned task and wakes its owner', async () => {
     const { ctx, service, store } = createHarness()
     const assistant = await service.createAssistant(assistantInput())

@@ -1904,6 +1904,18 @@ textarea.input {
   opacity: 0.4;
 }
 
+.teamLastError {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .taskList {
   display: flex;
   flex-direction: column;

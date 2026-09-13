@@ -474,10 +474,11 @@ export class TeamRuntime {
 
       if (!shouldRestart) return next
       try {
-        await this.ensureMembersOnline(next)
+        const assembled = await this.service.refreshMemberSnapshots(teamId)
+        await this.ensureMembersOnline(assembled)
         return await this.service.updateRuntimeTeam(
           teamId,
-          current => ({ ...current, state: 'active' }),
+          current => ({ ...current, state: 'active', lastError: undefined }),
           'team.context_reset_completed',
           `Team ${team.name} restarted with fresh member contexts`,
         )
@@ -623,7 +624,7 @@ export class TeamRuntime {
       await this.messages.recover(this.service.getTeam(team.id))
           await this.service.updateRuntimeTeam(
             team.id,
-            current => ({ ...current, state: 'active' }),
+            current => ({ ...current, state: 'active', lastError: undefined }),
             'team.recovered',
             `Team ${team.name} recovered after plugin startup`,
           )
@@ -695,11 +696,12 @@ export class TeamRuntime {
       `Team ${team.name} is starting`,
     )
     try {
+      await this.service.refreshMemberSnapshots(teamId)
       await this.ensureMembersOnline(this.service.getTeam(teamId))
       await this.messages.recover(this.service.getTeam(teamId))
       return await this.service.updateRuntimeTeam(
         teamId,
-        current => ({ ...current, state: 'active' }),
+        current => ({ ...current, state: 'active', lastError: undefined }),
         'team.started',
         `Team ${team.name} started`,
       )
@@ -980,7 +982,15 @@ export class TeamRuntime {
     const message = error instanceof Error ? error.message : String(error)
     await this.service.updateRuntimeTeam(
       teamId,
-      team => ({ ...team, state: team.state === 'ownership_conflict' ? team.state : 'error' }),
+      team => ({
+        ...team,
+        state: team.state === 'ownership_conflict' ? team.state : 'error',
+        lastError: {
+          ...(error instanceof AgentTeamError ? { code: error.code } : {}),
+          message,
+          failedAt: new Date().toISOString(),
+        },
+      }),
       'team.runtime_error',
       message,
     )

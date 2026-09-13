@@ -13,6 +13,8 @@ import {
   updateAssistantInputSchema,
 } from '../domain/schemas.js'
 import {
+  memberTemplateDrift,
+  rebuildMemberSnapshot,
   snapshotAssistant,
   type AddTeamMemberInput,
   type AssistantTemplate,
@@ -628,6 +630,42 @@ export class AgentTeamService extends Service {
     const team = requireTeam(this.store, teamId)
     assertRevision('team', team.revision, options.expectedRevision)
     return this.requireRuntime().startTeam(teamId)
+  }
+
+  async refreshMemberSnapshots(teamId: string): Promise<TeamAggregate> {
+    const team = requireTeam(this.store, teamId)
+    const refreshable = Object.values(team.members).filter(member => member.desiredState !== 'removing')
+    const missing = refreshable.filter(member => this.store.getAssistant(member.assistantId) === undefined)
+    if (missing.length > 0) {
+      throw new AgentTeamError(
+        'ASSISTANT_NOT_FOUND',
+        `Assistant templates are missing for members: ${missing.map(member => member.displayName).join(', ')}`,
+        {
+          members: missing.map(member => ({
+            slotId: member.id,
+            displayName: member.displayName,
+            assistantId: member.assistantId,
+          })),
+        },
+      )
+    }
+    const staleIds = new Set(refreshable
+      .filter(member => memberTemplateDrift(member, this.store.getAssistant(member.assistantId)!))
+      .map(member => member.id))
+    if (staleIds.size === 0) return team
+    return this.updateRuntimeTeam(
+      teamId,
+      current => ({
+        ...current,
+        members: Object.fromEntries(Object.entries(current.members).map(([slotId, member]) => {
+          if (!staleIds.has(slotId)) return [slotId, member]
+          const assistant = this.store.getAssistant(member.assistantId)
+          return assistant === undefined ? [slotId, member] : [slotId, rebuildMemberSnapshot(member, assistant)]
+        })),
+      }),
+      'team.snapshots_refreshed',
+      `Refreshed ${staleIds.size} member snapshot(s) from current assistant templates`,
+    )
   }
 
   async resetTeam(

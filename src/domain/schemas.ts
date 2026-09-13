@@ -118,6 +118,12 @@ export const teamMessageSchema = z.object({
   createdAt: isoDate,
 }).strict()
 
+export const teamLastErrorSchema = z.object({
+  code: z.string().optional(),
+  message: z.string(),
+  failedAt: isoDate,
+}).strict()
+
 export const teamAggregateSchema = z.object({
   schemaVersion: z.literal(1),
   id: nonEmpty,
@@ -140,6 +146,7 @@ export const teamAggregateSchema = z.object({
   tasks: z.record(z.string(), teamTaskSchema),
   leases: z.record(z.string(), fileScopeLeaseSchema),
   outbox: z.record(z.string(), teamMessageSchema),
+  lastError: teamLastErrorSchema.optional(),
   revision: z.int().positive(),
   createdAt: isoDate,
   updatedAt: isoDate,

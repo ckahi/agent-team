@@ -18,7 +18,7 @@ import { callAgentTeam, subscribeAgentTeamConversation } from '../api.js'
 import { AssistantPanel } from '../assistants/AssistantPanel.js'
 import css from '../AgentTeam.module.css'
 import { CrownIcon } from '../icons/CrownIcon.js'
-import { memberStatusLabel, TASK_STATE_LABELS } from '../labels.js'
+import { memberStatusLabel, TASK_STATE_LABELS, teamStartErrorHint } from '../labels.js'
 import {
   initialVisibleMemberSlots,
   reconcileVisibleMemberSlots,
@@ -867,6 +867,17 @@ function TeamCard({
         )}
         {executing && <span className={`${css.badge} ${css.badgeSuccess ?? ''}`}>任务执行中</span>}
       </header>
+
+      {canRetryTeamStart(team.state) && (
+        <div className={css.teamLastError}>
+          <span>
+            {team.lastError
+              ? `上次启动失败（${new Date(team.lastError.failedAt).toLocaleString()}）：${team.lastError.message}`
+              : '上次启动失败：原因未记录（升级前数据），可点「重试启动」重新获取'}
+          </span>
+          <span>{teamStartErrorHint(team.lastError?.code)}</span>
+        </div>
+      )}
 
       <section className={css.teamMemberSection} aria-label="团队成员">
         <div className={css.teamSectionHeader}>

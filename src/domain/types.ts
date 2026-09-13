@@ -13,6 +13,7 @@ import type {
   retiredMemberSessionSchema,
   teamActivitySchema,
   teamAggregateSchema,
+  teamLastErrorSchema,
   teamMemberSlotSchema,
   teamMessageSchema,
   teamTaskSchema,
@@ -29,6 +30,7 @@ export type RetiredMemberSession = z.infer<typeof retiredMemberSessionSchema>
 export type TeamTask = z.infer<typeof teamTaskSchema>
 export type FileScopeLease = z.infer<typeof fileScopeLeaseSchema>
 export type TeamAggregate = z.infer<typeof teamAggregateSchema>
+export type TeamLastError = z.infer<typeof teamLastErrorSchema>
 export type TeamMessage = z.infer<typeof teamMessageSchema>
 export type TeamActivity = z.infer<typeof teamActivitySchema>
 export type Operation = z.infer<typeof operationSchema>
@@ -56,4 +58,31 @@ export function snapshotAssistant(assistant: AssistantTemplate): AssistantSnapsh
     skillAllowlist: [...assistant.skillAllowlist],
     mcpServers: [...assistant.mcpServers],
   }
+}
+
+export function rebuildMemberSnapshot(member: TeamMemberSlot, assistant: AssistantTemplate): TeamMemberSlot {
+  return {
+    ...member,
+    displayName: assistant.name,
+    assistantSnapshot: snapshotAssistant(assistant),
+  }
+}
+
+export function memberTemplateDrift(member: TeamMemberSlot, assistant: AssistantTemplate): boolean {
+  const fresh = snapshotAssistant(assistant)
+  const current = member.assistantSnapshot
+  return member.displayName !== assistant.name
+    || current.assistantId !== fresh.assistantId
+    || current.revision !== fresh.revision
+    || current.name !== fresh.name
+    || current.instructions !== fresh.instructions
+    || current.provider !== fresh.provider
+    || current.model !== fresh.model
+    || current.reasoningEffort !== fresh.reasoningEffort
+    || current.agentPresetId !== fresh.agentPresetId
+    || current.permissionPresetId !== fresh.permissionPresetId
+    || current.skillAllowlist.length !== fresh.skillAllowlist.length
+    || fresh.skillAllowlist.some((value, index) => value !== current.skillAllowlist[index])
+    || current.mcpServers.length !== fresh.mcpServers.length
+    || fresh.mcpServers.some((value, index) => value !== current.mcpServers[index])
 }

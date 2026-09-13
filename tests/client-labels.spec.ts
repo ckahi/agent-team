@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PERMISSION_LABELS, TASK_STATE_LABELS, taskStatusLabel } from '../src/client/labels.js'
+import { PERMISSION_LABELS, TASK_STATE_LABELS, taskStatusLabel, teamStartErrorHint } from '../src/client/labels.js'
 import { teamTaskSchema } from '../src/domain/schemas.js'
 
 describe('taskStatusLabel', () => {
@@ -43,4 +43,21 @@ describe('taskStatusLabel', () => {
       'danger-full-access': '完全访问',
     })
   })
+})
+
+describe('teamStartErrorHint', () => {
+  it('returns the preset-specific guidance for PRESET_PROMPT_INCOMPATIBLE', () => {
+    const hint = teamStartErrorHint('PRESET_PROMPT_INCOMPATIBLE')
+    expect(hint).toContain('Agent Preset')
+    expect(hint).toContain('重试')
+    expect(hint).toContain('最新配置')
+  })
+
+  it.each([undefined, 'WORKSPACE_UNAVAILABLE', 'SOME_FUTURE_CODE'])(
+    'falls back to the generic guidance for %j',
+    code => {
+      expect(teamStartErrorHint(code)).toBe(teamStartErrorHint(undefined))
+      expect(teamStartErrorHint(code)).toContain('重试')
+    },
+  )
 })
