@@ -22,6 +22,7 @@ import { memberStatusLabel, TASK_STATE_LABELS, teamStartErrorHint } from '../lab
 import {
   initialVisibleMemberSlots,
   reconcileVisibleMemberSlots,
+  sortMembersLeaderFirst,
   toggleVisibleMemberSlot,
 } from '../member-visibility.js'
 import { AnimatedModal, Empty, Field } from '../shared.js'
@@ -182,7 +183,7 @@ function TeamWorkbench({
   pickWorkspace: () => Promise<WorkspaceChoice | null>
   onChanged: () => Promise<void>
 }): JSX.Element {
-  const members = Object.values(team.members)
+  const members = sortMembersLeaderFirst(Object.values(team.members))
   const memberIds = members.map(member => member.id)
   const [snapshot, setSnapshot] = useState<TeamWorkbenchView>()
   const [visibleSlots, setVisibleSlots] = useState(() => initialVisibleMemberSlots(memberIds))
@@ -238,7 +239,7 @@ function TeamWorkbench({
     if (refreshTimer.current !== undefined) clearTimeout(refreshTimer.current)
   }, [])
   useEffect(() => {
-    setVisibleSlots(current => reconcileVisibleMemberSlots(current, previousMemberIds.current, memberIds))
+    setVisibleSlots(current => reconcileVisibleMemberSlots(current, previousMemberIds.current, memberIds, team.leaderSlotId))
     previousMemberIds.current = memberIds
   }, [team.members])
   useEffect(() => {
@@ -764,7 +765,7 @@ function TeamCard({
   const [resetOpen, setResetOpen] = useState(false)
   const [memberToRemove, setMemberToRemove] = useState<{ slotId: string; displayName: string }>()
   const [error, setError] = useState<string>()
-  const members = Object.values(team.members)
+  const members = sortMembersLeaderFirst(Object.values(team.members))
   const tasks = Object.values(team.tasks)
   const executing = isTeamExecuting(team)
 
