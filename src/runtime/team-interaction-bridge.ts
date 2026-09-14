@@ -140,8 +140,16 @@ export class TeamInteractionBridge {
     request: AskUserQuestionRequestEvent,
     next: () => Promise<AskUserQuestionAnswer>,
   ): Promise<AskUserQuestionAnswer> {
-    const sessionId = request.agent === undefined ? undefined : String(request.agent.session.id)
-    if (sessionId === undefined || !this.acceptsSession(sessionId)) return next()
+    const sessionId = this.resolveOwnedSessionId(request.agent)
+    if (sessionId === undefined) {
+      if (request.agent !== undefined) {
+        this.ctx.logger?.warn(
+          'agent-team: user question from an unowned agent was not claimed; '
+          + `agent.id=${String(request.agent.id)} agent.session.id=${String(request.agent.session?.id)}`,
+        )
+      }
+      return next()
+    }
     const questions = request.questions.map(toQuestionItemView)
     return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
       let settled = false
@@ -177,8 +185,14 @@ export class TeamInteractionBridge {
     request: ApprovalRequestEvent,
     next: () => Promise<ApprovalOutcome>,
   ): Promise<ApprovalOutcome> {
-    const sessionId = String(request.agent.session.id)
-    if (!this.acceptsSession(sessionId)) return next()
+    const sessionId = this.resolveOwnedSessionId(request.agent)
+    if (sessionId === undefined) {
+      this.ctx.logger?.warn(
+        'agent-team: approval request from an unowned agent was not claimed; '
+        + `agent.id=${String(request.agent?.id)} agent.session.id=${String(request.agent?.session?.id)}`,
+      )
+      return next()
+    }
     return new Promise<ApprovalOutcome>((resolve, reject) => {
       let settled = false
       const record: PendingApprovalRecord = {
@@ -214,6 +228,26 @@ export class TeamInteractionBridge {
 
   private acceptsSession(sessionId: string): boolean {
     return [...this.scopes].some(scope => scope.acceptsSession(sessionId))
+  }
+
+  /**
+   * Resolve the request's agent to a team session id the bridge owns. The
+   * agent registry shares one id between agent and session, but the waterfall
+   * payload has carried either identity across versions, so try both instead
+   * of assuming one — a mismatch here silently leaks the interaction to the
+   * official conversation UI and the workbench never shows it.
+   */
+  private resolveOwnedSessionId(
+    agent: { id: unknown; session?: { id: unknown } } | undefined,
+  ): string | undefined {
+    if (agent === undefined) return undefined
+    const candidates = [agent.session?.id, agent.id]
+    for (const candidate of candidates) {
+      if (candidate === undefined) continue
+      const sessionId = String(candidate)
+      if (this.acceptsSession(sessionId)) return sessionId
+    }
+    return undefined
   }
 
   private notifyChange(sessionId: string): void {

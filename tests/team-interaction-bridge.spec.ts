@@ -90,6 +90,41 @@ describe('TeamInteractionBridge', () => {
     expect(bridge.list('session-9')).toEqual([])
     await bridge.dispose()
   })
+
+  it('claims via the agent id when the session id identity differs', async () => {
+    const { ctx, dispatch } = contextWithListeners()
+    const onChange = vi.fn()
+    const bridge = new TeamInteractionBridge(ctx, {
+      acceptsSession: id => id === 'agent-1',
+      onChange,
+    })
+    bridge.start()
+
+    const next = vi.fn()
+    const dispatched = dispatch('user-questions/request', {
+      questions: [{
+        id: 'language',
+        question: '选择语言？',
+        options: [{ label: 'TypeScript' }],
+      }],
+      agent: { session: { id: SessionId('session-x') }, id: 'agent-1' },
+    }, next) as Promise<unknown>
+
+    await vi.waitFor(() => {
+      expect(bridge.list('agent-1')).toEqual([expect.objectContaining({ kind: 'question' })])
+    })
+    expect(onChange).toHaveBeenCalledWith('agent-1')
+    const pendingId = bridge.list('agent-1')[0]!.id
+    await bridge.respond('agent-1', pendingId, {
+      kind: 'question',
+      answers: [{ id: 'language', selected: ['TypeScript'] }],
+    })
+    await expect(dispatched).resolves.toEqual({
+      answers: [{ id: 'language', selected: ['TypeScript'] }],
+    })
+    expect(next).not.toHaveBeenCalled()
+    await bridge.dispose()
+  })
 })
 
 describe('normalizeQuestionAnswers', () => {
