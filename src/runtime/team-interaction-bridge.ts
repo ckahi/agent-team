@@ -47,6 +47,16 @@ type PendingInteractionRecord = PendingQuestionRecord | PendingApprovalRecord
 
 export interface TeamInteractionScope {
   acceptsSession: (sessionId: string) => boolean
+  /**
+   * Resolve a session id (possibly a derived sub-agent's own session) to the
+   * owned team session it belongs to, by walking the durable parentSession
+   * chain. Ownership is a SESSION relation, not a scope-ancestor relation:
+   * harness agent scopes are flat, so a member-level listener can never see
+   * child dispatch keys — but the request payload itself carries the lineage
+   * (agent.session.header.parentSession). Return undefined when no owned
+   * ancestor exists (depth-capped by the implementation).
+   */
+  resolveOwnedSession?: (sessionId: string) => string | undefined
   onChange: (sessionId: string) => void
 }
 
@@ -69,10 +79,16 @@ export class TeamInteractionBridge {
 
   start(): void {
     if (this.disposers !== undefined) return
+    // prepend 是 G1 的核心：cordis 全树共享单一 _hooks 监听器数组，unshift 使本
+    // 插件包级 untagged 监听器排在宿主 api-remotes 转发桥（宿主启动时最先注册、
+    // 命中即短路不调 next()）之前，从而先获得 owned 会话请求的 waterfall 应答权。
+    // attachAgentContext 保留为降级兜底：若某宿主版本 prepend 语义失效，包级监听
+    // 器退回到转发桥之后——此时兜底路径最坏退化为本修复前的 bug 现状（请求仍被
+    // 转发桥抢答、卡片泄漏主界面），不会更差，但也不会更好。
     const removeQuestions = this.ctx.on('user-questions/request', (request, next) =>
-      this.claimQuestion(request, next))
+      this.claimQuestion(request, next), { prepend: true })
     const removeApprovals = this.ctx.on('approval/request', (request, next) =>
-      this.claimApproval(request, next))
+      this.claimApproval(request, next), { prepend: true })
     this.disposers = () => {
       removeQuestions()
       removeApprovals()
@@ -160,12 +176,16 @@ export class TeamInteractionBridge {
   ): Promise<AskUserQuestionAnswer> {
     const sessionId = this.resolveOwnedSessionId(request.agent)
     if (sessionId === undefined) {
-      if (request.agent !== undefined) {
-        this.ctx.logger?.warn(
-          'agent-team: user question from an unowned agent was not claimed; '
-          + `agent.id=${String(request.agent.id)} agent.session.id=${String(request.agent.session?.id)}`,
-        )
-      }
+      // G4 + B-1: the package-level prepend listener is the only vantage that
+      // sees every request; this warn means the plugin did NOT claim it and
+      // the host's api-remotes forwarding bridge will answer it on the main
+      // UI. Both claim paths warn unconditionally with empty placeholders when
+      // an identity field is missing, so a silent passthrough can never hide.
+      this.ctx.logger?.warn(
+        'agent-team: user question not claimed by agent-team (will be answered by the host fallback); '
+        + `agent.id=${String(request.agent?.id)} agent.session.id=${String(request.agent?.session?.id)} `
+        + `parentSession=${String(request.agent?.session?.header?.parentSession)}`,
+      )
       return next()
     }
     const questions = request.questions.map(toQuestionItemView)
@@ -205,9 +225,12 @@ export class TeamInteractionBridge {
   ): Promise<ApprovalOutcome> {
     const sessionId = this.resolveOwnedSessionId(request.agent)
     if (sessionId === undefined) {
+      // G4: see claimQuestion — unclaimed approval falls through to the host
+      // forwarding bridge (main UI card) with a full-identity warn trail.
       this.ctx.logger?.warn(
-        'agent-team: approval request from an unowned agent was not claimed; '
-        + `agent.id=${String(request.agent?.id)} agent.session.id=${String(request.agent?.session?.id)}`,
+        'agent-team: approval request not claimed by agent-team (will be answered by the host fallback); '
+        + `agent.id=${String(request.agent?.id)} agent.session.id=${String(request.agent?.session?.id)} `
+        + `parentSession=${String(request.agent?.session?.header?.parentSession)} toolName=${String(request.toolName)}`,
       )
       return next()
     }
@@ -249,21 +272,53 @@ export class TeamInteractionBridge {
   }
 
   /**
-   * Resolve the request's agent to a team session id the bridge owns. The
-   * agent registry shares one id between agent and session, but the waterfall
-   * payload has carried either identity across versions, so try both instead
-   * of assuming one — a mismatch here silently leaks the interaction to the
-   * official conversation UI and the workbench never shows it.
+   * Resolve the request's agent to a team session id the bridge owns.
+   *
+   * Base candidates are the payload's two carried identities (session id and
+   * agent id — the registry shares one id between agent and session, but the
+   * waterfall payload has carried either across versions). When neither is
+   * owned, the durable parentSession chain decides (G3): a derived sub-agent's
+   * own session id is never owned, so each candidate — including the chain
+   * head read from `agent.session.header.parentSession` — is offered to the
+   * scope's lineage resolver, which walks up to the nearest owned ancestor.
+   * A mismatch or unresolvable lineage silently leaks the interaction to the
+   * official conversation UI, so every miss is logged (see claim handlers).
    */
   private resolveOwnedSessionId(
-    agent: { id: unknown; session?: { id: unknown } } | undefined,
+    agent: { id: unknown; session?: { id: unknown; header?: { parentSession?: unknown } } } | undefined,
   ): string | undefined {
     if (agent === undefined) return undefined
     const candidates = [agent.session?.id, agent.id]
+    const parentSession = agent.session?.header?.parentSession
+    if (parentSession !== undefined && parentSession !== null) candidates.push(parentSession)
     for (const candidate of candidates) {
       if (candidate === undefined) continue
       const sessionId = String(candidate)
       if (this.acceptsSession(sessionId)) return sessionId
+      const resolved = this.resolveViaScopes(sessionId)
+      if (resolved !== undefined) return resolved
+    }
+    return undefined
+  }
+
+  /**
+   * Offer one session id to every registered scope's lineage resolver. A
+   * throwing resolver is contained here (logged, treated as "not owned") so a
+   * registry hiccup can never escape the claim path and fail the caller's
+   * tool open — the request degrades to passthrough instead.
+   */
+  private resolveViaScopes(sessionId: string): string | undefined {
+    for (const scope of this.scopes) {
+      if (scope.resolveOwnedSession === undefined) continue
+      try {
+        const resolved = scope.resolveOwnedSession(sessionId)
+        if (resolved !== undefined) return resolved
+      } catch (error) {
+        this.ctx.logger?.warn(
+          'agent-team: session lineage resolver failed while resolving an interaction owner; '
+          + `sessionId=${sessionId} error=${String(error)}`,
+        )
+      }
     }
     return undefined
   }
@@ -273,6 +328,37 @@ export class TeamInteractionBridge {
       if (scope.acceptsSession(sessionId)) scope.onChange(sessionId)
     }
   }
+}
+
+/**
+ * Depth cap for the parentSession lineage walk: durable session headers cannot
+ * form cycles, but a corrupt or adversarial store must not turn an interaction
+ * claim into an unbounded loop. Real delegation chains are a few levels deep.
+ */
+const MAX_LINEAGE_DEPTH = 8
+
+/**
+ * Walk the durable parentSession chain from `startSessionId` up to the nearest
+ * session satisfying `isOwned`, and return that owner's id (the start itself
+ * qualifies). A missing link, a throwing `readParentSession` (contained and
+ * treated as "no parent"), or the depth cap all resolve to undefined — the
+ * caller then passes the request through to the host fallback instead.
+ */
+export function resolveSessionLineageOwner(
+  startSessionId: string,
+  readParentSession: (sessionId: string) => string | undefined,
+  isOwned: (sessionId: string) => boolean,
+): string | undefined {
+  let cursor: string | undefined = startSessionId
+  for (let depth = 0; depth <= MAX_LINEAGE_DEPTH && cursor !== undefined; depth += 1) {
+    if (isOwned(cursor)) return cursor
+    try {
+      cursor = readParentSession(cursor)
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
 }
 
 export function normalizeQuestionAnswers(

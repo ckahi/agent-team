@@ -29,7 +29,7 @@ import type {
 import { projectContextUsage, projectConversation } from './conversation-projector.js'
 import { registerScopedSkillProvider } from './scoped-skills.js'
 import { TeamCommandHandler } from './team-command-handler.js'
-import { TeamInteractionBridge } from './team-interaction-bridge.js'
+import { resolveSessionLineageOwner, TeamInteractionBridge } from './team-interaction-bridge.js'
 import { TeamMessageDispatcher } from './team-message-dispatcher.js'
 import {
   createSystemTeamMessage as systemTeamMessage,
@@ -73,6 +73,14 @@ export class TeamRuntime {
     })
     this.interactions = new TeamInteractionBridge(ctx, {
       acceptsSession: sessionId => this.owned.has(sessionId),
+      resolveOwnedSession: sessionId => resolveSessionLineageOwner(
+        sessionId,
+        candidate => {
+          const parent = this.ctx.sessions.get(SessionId(candidate))?.header.parentSession
+          return parent === undefined ? undefined : String(parent)
+        },
+        ownedId => this.owned.has(ownedId),
+      ),
       onChange: sessionId => { this.publishOwnedConversation(sessionId) },
     })
     this.disposeStatusListener = ctx.on('agent/status', ({ agent, status }) => {

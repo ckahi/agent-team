@@ -252,6 +252,8 @@ Assistant settings are snapshotted when a member joins a team. Editing an assist
 - Files selected from outside the Workspace are copied to `.agent-team/uploads/` so agents can access them reliably.
 - The **Changes** view requires a Git Workspace. Normal folders still support file browsing.
 - Harness currently has no public API for physically deleting one session log. Reset or dissolved sessions are no longer restored or used by Agent Team, but old logs may remain in Harness storage.
+- **Interaction cards (questions and approvals) belong to the team.** When a team member calls `ask_user_question` or requests a permission elevation, the interactive card appears in that member's conversation column in the Agent Team workbench — not in the main Harness conversation view. The main view remains the fallback only for sessions Agent Team does not own.
+- **Derived sub-agents inherit the member's interaction channel.** When a member spawns a sub-agent (subagent/workflow tool) that triggers a permission elevation, the approval card is shown in the spawning member's column and is answered from the workbench. A sub-agent calling `ask_user_question` directly, however, fails with Harness's `DELEGATED_CALLER` error by design — questions must be asked by the member agent itself; have the sub-agent return its open question as part of its result so the member can ask it on the next turn.
 
 ## Troubleshooting
 
