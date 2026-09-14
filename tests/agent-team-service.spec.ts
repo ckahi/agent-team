@@ -325,6 +325,62 @@ describe('AgentTeamService', () => {
     expect(store.listAssistants()).toHaveLength(0)
   })
 
+  describe('validateAssistantUpdate', () => {
+    it('merges the patch over the current template and reports the revision without storing', async () => {
+      const { service, store } = createHarness()
+      const assistant = await service.createAssistant(assistantInput())
+
+      const validated = await service.validateAssistantUpdate(assistant.id, {
+        instructions: 'Updated instructions.',
+        reasoningEffort: 'high',
+      })
+
+      expect(validated.id).toBe(assistant.id)
+      expect(validated.expectedRevision).toBe(1)
+      expect(validated.value).toMatchObject({
+        name: 'Codex Lead',
+        instructions: 'Updated instructions.',
+        reasoningEffort: 'high',
+        provider: 'openai',
+        model: 'codex',
+        agentPresetId: 'default',
+        permissionPresetId: 'standard',
+        skillAllowlist: [],
+        mcpServers: [],
+      })
+      expect(store.getAssistant(assistant.id)?.instructions).toBe('Coordinate the team.')
+      expect(store.getAssistant(assistant.id)?.revision).toBe(1)
+    })
+
+    it('is idempotent for the same patch', async () => {
+      const { service } = createHarness()
+      const assistant = await service.createAssistant(assistantInput())
+      const first = await service.validateAssistantUpdate(assistant.id, { name: 'Renamed' })
+      const second = await service.validateAssistantUpdate(assistant.id, { name: 'Renamed' })
+      expect(second).toEqual(first)
+    })
+
+    it('rejects an unknown assistant id', async () => {
+      const { service } = createHarness()
+      await expect(service.validateAssistantUpdate('missing', { name: 'X' }))
+        .rejects.toMatchObject({ code: 'ASSISTANT_NOT_FOUND' })
+    })
+
+    it('rejects unknown patch fields', async () => {
+      const { service } = createHarness()
+      const assistant = await service.createAssistant(assistantInput())
+      await expect(service.validateAssistantUpdate(assistant.id, { nonsenseField: true } as never))
+        .rejects.toThrow()
+    })
+
+    it('rejects an invalid permission preset reference', async () => {
+      const { service } = createHarness()
+      const assistant = await service.createAssistant(assistantInput())
+      await expect(service.validateAssistantUpdate(assistant.id, { permissionPresetId: 'nonexistent' }))
+        .rejects.toMatchObject({ code: 'PERMISSION_PRESET_INVALID' })
+    })
+  })
+
   it('creates a multi-member draft and dissolves only the team', async () => {
     const { service, store } = createHarness()
     const assistant = await service.createAssistant(assistantInput())

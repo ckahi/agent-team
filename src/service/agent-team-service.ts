@@ -353,6 +353,25 @@ export class AgentTeamService extends Service {
     return next
   }
 
+  /**
+   * 校验一次助手模板更新（供 Assistant Builder 两段式 prepare 使用）：
+   * 解析 patch、合并当前模板并校验引用，但不写存储。
+   * 返回 expectedRevision 供 commit 阶段做乐观锁。
+   */
+  async validateAssistantUpdate(
+    id: string,
+    raw: UpdateAssistantInput,
+  ): Promise<{ id: string; expectedRevision: number; value: CreateAssistantInput }> {
+    const patch = updateAssistantInputSchema.parse(raw)
+    const current = requireAssistant(this.store, id)
+    const candidate = normalizeAssistantInput(createAssistantInputSchema.parse({
+      ...assistantInputOf(current),
+      ...patch,
+    }))
+    await this.validateAssistantReferences(candidate)
+    return { id, expectedRevision: current.revision, value: candidate }
+  }
+
   async cloneAssistant(id: string, name?: string): Promise<AssistantTemplate> {
     const source = requireAssistant(this.store, id)
     return this.createAssistant({

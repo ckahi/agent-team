@@ -279,14 +279,268 @@ function fakeInteractionBridge() {
     registerScope: vi.fn(() => vi.fn()),
     list: vi.fn(() => []),
     respond: vi.fn(async () => undefined),
+    attachAgentContext: vi.fn(),
   }
 }
+
+interface RegisteredTool {
+  name: string
+  execute: (args: Record<string, unknown>, exec: { agent?: { id?: string; session?: { snapshotEvents(): SessionEvent[] } } }) => Promise<unknown>
+}
+
+function toolOf(registered: readonly RegisteredTool[], name: string): RegisteredTool {
+  const tool = registered.find(item => item.name === name)
+  if (tool === undefined) throw new Error(`Tool '${name}' was not registered`)
+  return tool
+}
+
+function createToolHarness(service: Record<string, unknown>): {
+  runtime: AssistantBuilderRuntime
+  registered: RegisteredTool[]
+  sessionEvents: SessionEvent[]
+  dispose: () => Promise<void>
+} {
+  const registered: RegisteredTool[] = []
+  const sessionEvents: SessionEvent[] = []
+  const handle = fakeHandle()
+  handle.agent.session.snapshotEvents = () => sessionEvents
+  const cwdVariable = vi.fn()
+  const restrict = vi.fn()
+  const fakeCtx = fakeAgentContext(handle.agent, cwdVariable, restrict, registered)
+  const ctx = {
+    on: vi.fn(() => vi.fn()),
+    agents: {
+      get: vi.fn(() => undefined),
+      resume: vi.fn(async (options: { setup?: (ctx: unknown, agent: unknown) => Promise<void> }) => {
+        await options.setup?.(fakeCtx, handle.agent)
+        return handle
+      }),
+      create: vi.fn(async (options: { setup?: (ctx: unknown, agent: unknown) => Promise<void> }) => {
+        await options.setup?.(fakeCtx, handle.agent)
+        return handle
+      }),
+    },
+    llm: {
+      listProviders: vi.fn(() => [{ id: 'deepseek-official', name: 'DeepSeek' }]),
+      listModels: vi.fn(async () => [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]),
+      resolveModelInfo: vi.fn(async () => ({})),
+    },
+    agentPresets: {
+      defaultId: 'standard',
+      resolve: vi.fn(async () => ({})),
+      mount: vi.fn(async () => ({})),
+    },
+    permissionPresets: {
+      names: ['read-only'],
+      defaultPreset: 'read-only',
+      set: vi.fn(),
+    },
+    sessionPersistence: {
+      list: vi.fn(async () => [{ header: { id: 'agent-team:assistant-builder' }, revision: 'r1' }]),
+      open: vi.fn(async () => ({
+        header: {},
+        read: vi.fn(async () => ({ events: [] })),
+        close: vi.fn(async () => {}),
+      })),
+    },
+    sessions: { flush: vi.fn(async () => {}) },
+    logger: { warn: vi.fn() },
+    workspaceRegistry: { archivedSessionIds: [], archiveSession: vi.fn(async () => {}) },
+  }
+  const runtime = new AssistantBuilderRuntime(
+    ctx as never,
+    config,
+    service as never,
+    fakeModelPreferences(),
+    fakeInteractionBridge() as never,
+  )
+  return { runtime, registered, sessionEvents, dispose: () => runtime.dispose() }
+}
+
+function createAssistantServiceStub(): Record<string, unknown> & {
+  validateAssistantUpdate: ReturnType<typeof vi.fn>
+  updateAssistant: ReturnType<typeof vi.fn>
+} {
+  const template = {
+    schemaVersion: 1 as const,
+    id: 'assistant-1',
+    name: 'Reviewer',
+    instructions: 'Review code.',
+    provider: 'openai',
+    model: 'codex',
+    agentPresetId: 'default',
+    permissionPresetId: 'standard',
+    skillAllowlist: ['code-review'],
+    mcpServers: [],
+    revision: 3,
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-02T00:00:00.000Z',
+  }
+  return {
+    listAssistants: vi.fn(() => ({ items: [template], total: 1 })),
+    getAssistant: vi.fn((id: string) => {
+      if (id !== template.id) throw new Error('Unknown assistant')
+      return template
+    }),
+    validateAssistantUpdate: vi.fn(async () => ({
+      id: template.id,
+      expectedRevision: 3,
+      value: { ...template, instructions: 'Updated instructions.' },
+    })),
+    updateAssistant: vi.fn(async () => ({ ...template, revision: 4 })),
+    publishAssistantBuilderConversation: vi.fn(),
+  }
+}
+
+describe('AssistantBuilderRuntime assistant template tools', () => {
+  it('registers the read/update tools without denying them in restrict', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const names = registered.map(tool => tool.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'assistant_builder_list_assistants',
+      'assistant_builder_get_assistant',
+      'assistant_builder_update_assistant',
+    ]))
+    await dispose()
+  })
+
+  it('lists existing assistant summaries', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const result = await toolOf(registered, 'assistant_builder_list_assistants')
+      .execute({}, { agent: { id: 'agent-team:assistant-builder' } })
+    expect(service.listAssistants).toHaveBeenCalled()
+    expect(result).toEqual({
+      items: [{
+        id: 'assistant-1',
+        name: 'Reviewer',
+        description: undefined,
+        provider: 'openai',
+        model: 'codex',
+        revision: 3,
+        updatedAt: '2026-09-02T00:00:00.000Z',
+      }],
+      total: 1,
+    })
+    await dispose()
+  })
+
+  it('reads a single assistant template by id and propagates unknown-id errors', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const tool = toolOf(registered, 'assistant_builder_get_assistant')
+    const read = await tool.execute({ id: 'assistant-1' }, { agent: { id: 'agent-team:assistant-builder' } })
+    expect(service.getAssistant).toHaveBeenCalledWith('assistant-1')
+    expect(read).toMatchObject({ id: 'assistant-1', name: 'Reviewer', skillAllowlist: ['code-review'] })
+    await expect(tool.execute({ id: 'missing' }, { agent: { id: 'agent-team:assistant-builder' } }))
+      .rejects.toThrow()
+    await dispose()
+  })
+
+  it('rejects template tools called outside the owned agent', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    await expect(toolOf(registered, 'assistant_builder_list_assistants')
+      .execute({}, { agent: { id: 'someone-else' } })).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    await dispose()
+  })
+
+  it('prepares an update without writing and reports the expected revision', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, sessionEvents, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const tool = toolOf(registered, 'assistant_builder_update_assistant')
+    const prepared = await tool.execute(
+      { action: 'prepare', id: 'assistant-1', expectedRevision: 3, instructions: 'Updated instructions.' },
+      { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } },
+    )
+    expect(service.validateAssistantUpdate).toHaveBeenCalledWith('assistant-1', { instructions: 'Updated instructions.' })
+    expect(prepared).toMatchObject({ id: 'assistant-1', expectedRevision: 3, requiresExplicitUserConfirmation: true })
+    expect(service.updateAssistant).not.toHaveBeenCalled()
+    await dispose()
+  })
+
+  it('rejects a commit when nothing was prepared', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, sessionEvents, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    await expect(toolOf(registered, 'assistant_builder_update_assistant')
+      .execute({ action: 'commit' }, { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect(service.updateAssistant).not.toHaveBeenCalled()
+    await dispose()
+  })
+
+  it('rejects a commit without a fresh real user response after preparation', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, sessionEvents, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const tool = toolOf(registered, 'assistant_builder_update_assistant')
+    await tool.execute(
+      { action: 'prepare', id: 'assistant-1', instructions: 'Updated instructions.' },
+      { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } },
+    )
+    await expect(tool.execute({ action: 'commit' }, { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect(service.updateAssistant).not.toHaveBeenCalled()
+    await dispose()
+  })
+
+  it('commits a prepared update through the optimistic lock and clears the pending draft', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, sessionEvents, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const tool = toolOf(registered, 'assistant_builder_update_assistant')
+    const prepared = await tool.execute(
+      { action: 'prepare', id: 'assistant-1', instructions: 'Updated instructions.' },
+      { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } },
+    )
+    sessionEvents.push(userEvent(9, '确认修改'))
+    const committed = await tool.execute({ action: 'commit' }, { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } })
+    expect(service.updateAssistant).toHaveBeenCalledWith(
+      'assistant-1',
+      expect.objectContaining({ instructions: 'Updated instructions.' }),
+      { expectedRevision: (prepared as { expectedRevision: number }).expectedRevision },
+    )
+    expect(committed).toMatchObject({ id: 'assistant-1', revision: 4 })
+    sessionEvents.length = 0
+    await expect(tool.execute({ action: 'commit' }, { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    await dispose()
+  })
+
+  it('clears pending updates when the conversation is archived', async () => {
+    const service = createAssistantServiceStub()
+    const { runtime, registered, sessionEvents, dispose } = createToolHarness(service)
+    await runtime.getConversation('agent-team:assistant-builder')
+    const tool = toolOf(registered, 'assistant_builder_update_assistant')
+    await tool.execute(
+      { action: 'prepare', id: 'assistant-1', instructions: 'Updated instructions.' },
+      { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } },
+    )
+
+    await runtime.archiveConversation('agent-team:assistant-builder')
+
+    // Even with a fresh real user message after archive, commit must fail:
+    // the pending update was dropped together with the archived session.
+    sessionEvents.push(userEvent(9, '确认修改'))
+    await expect(tool.execute({ action: 'commit' }, { agent: { id: 'agent-team:assistant-builder', session: { snapshotEvents: () => sessionEvents } } }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect(service.updateAssistant).not.toHaveBeenCalled()
+    await dispose()
+  })
+})
 
 function fakeHandle() {
   const agent = {
     id: 'agent-team:assistant-builder',
     status: 'idle' as const,
-    session: { snapshotEvents: () => [], header: {} },
+    session: { snapshotEvents: (): SessionEvent[] => [], header: {} },
     followup: vi.fn(),
     cancel: vi.fn(),
     whenIdle: vi.fn(async () => {}),
@@ -301,17 +555,23 @@ function fakeAgentContext(
   agent: unknown,
   variable: ReturnType<typeof vi.fn>,
   restrict: ReturnType<typeof vi.fn>,
+  registered: RegisteredTool[] = [],
 ): unknown {
   return {
     agent,
+    workspaceRegistry: { archiveSession: vi.fn(async () => {}) },
+    sessions: { flush: vi.fn(async () => {}) },
     tools: {
       presentAs: vi.fn(),
       guard: vi.fn(),
-      register: vi.fn(),
+      register: vi.fn((tool: RegisteredTool) => { registered.push(tool) }),
       schemas: vi.fn(() => [
         { name: 'assistant_builder_get_catalog' },
         { name: 'assistant_builder_prepare' },
         { name: 'assistant_builder_commit' },
+        { name: 'assistant_builder_list_assistants' },
+        { name: 'assistant_builder_get_assistant' },
+        { name: 'assistant_builder_update_assistant' },
         { name: 'ask_user_question' },
         { name: 'read' },
         { name: 'read_image' },

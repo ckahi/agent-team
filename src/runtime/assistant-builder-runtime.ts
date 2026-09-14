@@ -41,7 +41,7 @@ export const ASSISTANT_BUILDER_PROMPT = `
 8. 用简洁清单复述最终配置，并询问用户是否确认创建。用户可以用自然语言表达同意，例如“确认”“可以”“就这样创建”“没问题，创建吧”，不要要求固定口令。必须等待新的用户消息，不得在同一轮代替用户确认。
 9. 只有用户对当前最终配置明确表达同意后才能调用 assistant_builder_commit。若用户的回复含糊、否定创建、提出问题或要求修改配置，不得提交；应先回答或修改草稿，再次展示最终配置并征求确认。
 10. 创建成功后明确告知助手名称，并提示它现在可以加入团队。
-11. 你只能帮助设计和创建助手模板，不创建团队、不修改或删除已有助手，也不执行 Workspace 任务。
+11. 你可以帮助设计和创建助手模板，也可以读取和修改已有助手模板：修改前先用 assistant_builder_list_assistants 和 assistant_builder_get_assistant 了解现状，再用 assistant_builder_update_assistant 的 action=prepare 校验；必须等用户在新的消息中明确同意后才能 action=commit。你不创建团队、不删除助手，也不执行 Workspace 任务。
 
 保持中文、简洁、主动，但不要替用户猜测会显著影响成本、权限或能力范围的参数。
 
@@ -66,6 +66,13 @@ interface PendingAssistantDraft {
   preparedThroughSeq: number
 }
 
+interface PendingAssistantUpdate {
+  id: string
+  expectedRevision: number
+  value: CreateAssistantInput
+  preparedThroughSeq: number
+}
+
 export class AssistantBuilderRuntime {
   private handle: AgentHandle | undefined
   private starting: Promise<AgentHandle> | undefined
@@ -75,6 +82,7 @@ export class AssistantBuilderRuntime {
   private configuration: AssistantBuilderConfiguration | undefined
   private readonly configurations = new Map<string, AssistantBuilderConfiguration>()
   private readonly pendingDrafts = new Map<string, PendingAssistantDraft>()
+  private readonly pendingUpdates = new Map<string, PendingAssistantUpdate>()
   private publishTimer: ReturnType<typeof setTimeout> | undefined
   private readonly disposeStatusListener: () => void
   private readonly disposeConversationListener: () => void
@@ -264,6 +272,7 @@ export class AssistantBuilderRuntime {
     }
     this.configurations.delete(sessionId)
     this.pendingDrafts.delete(sessionId)
+    this.pendingUpdates.delete(sessionId)
   }
 
   async dispose(): Promise<void> {
@@ -407,6 +416,9 @@ export class AssistantBuilderRuntime {
         'assistant_builder_get_catalog',
         'assistant_builder_prepare',
         'assistant_builder_commit',
+        'assistant_builder_list_assistants',
+        'assistant_builder_get_assistant',
+        'assistant_builder_update_assistant',
         'ask_user_question',
       ])
       agentCtx.tools.guard(execution => (allowedTools.has(execution.name) || ASSISTANT_BUILDER_READONLY_TOOLS.has(execution.name))
@@ -733,6 +745,161 @@ export class AssistantBuilderRuntime {
         const assistant = await this.service.createAssistant(pending.input)
         if (this.pendingDrafts.get(sessionId) === pending) this.pendingDrafts.delete(sessionId)
         return { id: assistant.id, name: assistant.name, revision: assistant.revision }
+      },
+    }))
+    agentCtx.tools.register(defineTool({
+      name: 'assistant_builder_list_assistants',
+      description: 'List summaries of existing assistant templates: id, name, description, provider, model, revision, and updatedAt. Use it before creating or updating an assistant.',
+      parameters: {},
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      execute: async (_args, exec) => {
+        this.assertToolIdentity(exec.agent?.id, sessionId)
+        const page = this.service.listAssistants()
+        return {
+          items: page.items.map(assistant => ({
+            id: assistant.id,
+            name: assistant.name,
+            ...(assistant.description === undefined ? {} : { description: assistant.description }),
+            provider: assistant.provider,
+            model: assistant.model,
+            revision: assistant.revision,
+            updatedAt: assistant.updatedAt,
+          })),
+          total: page.total,
+        }
+      },
+    }))
+    agentCtx.tools.register(defineTool({
+      name: 'assistant_builder_get_assistant',
+      description: 'Read every setting of one existing assistant template, including instructions, reasoning effort, permission preset, Skills, and MCP Servers.',
+      parameters: {
+        id: { type: 'string', required: true, description: 'Assistant template id from assistant_builder_list_assistants.' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      execute: async (args, exec) => {
+        this.assertToolIdentity(exec.agent?.id, sessionId)
+        const assistant = this.service.getAssistant(args.id)
+        return {
+          schemaVersion: assistant.schemaVersion,
+          id: assistant.id,
+          name: assistant.name,
+          ...(assistant.description === undefined ? {} : { description: assistant.description }),
+          ...(assistant.icon === undefined ? {} : { icon: assistant.icon }),
+          instructions: assistant.instructions,
+          provider: assistant.provider,
+          model: assistant.model,
+          ...(assistant.reasoningEffort === undefined ? {} : { reasoningEffort: assistant.reasoningEffort }),
+          agentPresetId: assistant.agentPresetId,
+          permissionPresetId: assistant.permissionPresetId,
+          skillAllowlist: [...assistant.skillAllowlist],
+          mcpServers: [...assistant.mcpServers],
+          revision: assistant.revision,
+          createdAt: assistant.createdAt,
+          updatedAt: assistant.updatedAt,
+        }
+      },
+    }))
+    agentCtx.tools.register(defineTool({
+      name: 'assistant_builder_update_assistant',
+      description: "Update an existing assistant template in two steps. action=prepare validates the patch against the current template and reports the expectedRevision; it does not write. Then show the full result to the user and ask for explicit confirmation (ask_user_question or plain text); only after a later real user message approves it, call again with action=commit. The commit fails if the template changed elsewhere in between.",
+      parameters: {
+        action: { type: 'string', required: true, enum: ['prepare', 'commit'], description: 'prepare validates and stages the patch; commit applies the prepared patch.' },
+        id: { type: 'string', description: 'Assistant template id; required for prepare.' },
+        name: { type: 'string', description: 'New unique user-facing assistant name.' },
+        description: { type: 'string', description: 'New short user-facing purpose.' },
+        instructions: { type: 'string', description: 'New stable responsibilities, constraints, workflow, and acceptance rules.' },
+        provider: { type: 'string', description: 'New provider id; pass together with model.' },
+        model: { type: 'string', description: 'New model id; pass together with provider.' },
+        reasoningEffort: { type: 'string', description: 'New reasoning effort id; omit to keep the current one.' },
+        agentPresetId: { type: 'string', description: 'New Agent Preset id.' },
+        permissionPresetId: { type: 'string', description: 'New permission preset id.' },
+        skills: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Replacement Skill allowlist explicitly selected by the user from the preset catalog.',
+        },
+        mcpServers: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Replacement MCP Server allowlist explicitly selected by the user from the preset catalog.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{
+          type: 'text',
+          text: (value as { action?: string }).action === 'prepare'
+            ? '更新草稿已校验。请展示完整变更，并通过 ask_user_question 或文本等待用户在新消息中明确同意；同意后才能 commit。'
+            : JSON.stringify(value),
+        }],
+      },
+      execute: async (args, exec) => {
+        this.assertToolIdentity(exec.agent?.id, sessionId)
+        if (exec.agent === undefined) {
+          throw new AgentTeamError('INVALID_REQUEST', 'Assistant Builder Agent is unavailable')
+        }
+        if (args.action === 'commit') {
+          const pending = this.pendingUpdates.get(sessionId)
+          if (pending === undefined) {
+            throw new AgentTeamError(
+              'INVALID_REQUEST',
+              '没有等待确认的助手更新草稿，请先调用 action=prepare',
+            )
+          }
+          if (!hasFreshAssistantDraftUserResponse(
+            exec.agent.session.snapshotEvents(),
+            pending.preparedThroughSeq,
+          )) {
+            throw new AgentTeamError(
+              'INVALID_REQUEST',
+              '必须等待用户在新的消息中明确同意当前助手修改',
+            )
+          }
+          const assistant = await this.service.updateAssistant(
+            pending.id,
+            pending.value,
+            { expectedRevision: pending.expectedRevision },
+          )
+          if (this.pendingUpdates.get(sessionId) === pending) this.pendingUpdates.delete(sessionId)
+          return { id: assistant.id, name: assistant.name, revision: assistant.revision }
+        }
+        if (args.id === undefined || args.id.trim().length === 0) {
+          throw new AgentTeamError('INVALID_REQUEST', 'action=prepare 需要 id 指定要修改的助手')
+        }
+        const patch: Record<string, unknown> = {
+          ...(args.name === undefined ? {} : { name: args.name }),
+          ...(args.description === undefined ? {} : { description: args.description }),
+          ...(args.instructions === undefined ? {} : { instructions: args.instructions }),
+          ...(args.provider === undefined ? {} : { provider: args.provider }),
+          ...(args.model === undefined ? {} : { model: args.model }),
+          ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
+          ...(args.agentPresetId === undefined ? {} : { agentPresetId: args.agentPresetId }),
+          ...(args.permissionPresetId === undefined ? {} : { permissionPresetId: args.permissionPresetId }),
+          ...(args.skills === undefined ? {} : { skillAllowlist: args.skills }),
+          ...(args.mcpServers === undefined ? {} : { mcpServers: args.mcpServers }),
+        }
+        if (Object.keys(patch).length === 0) {
+          throw new AgentTeamError('INVALID_REQUEST', 'action=prepare 至少需要一个待修改字段')
+        }
+        const validated = await this.service.validateAssistantUpdate(args.id, patch)
+        this.pendingUpdates.set(sessionId, {
+          id: validated.id,
+          expectedRevision: validated.expectedRevision,
+          value: validated.value,
+          preparedThroughSeq: exec.agent.session.snapshotEvents().at(-1)?.seq ?? -1,
+        })
+        return {
+          action: 'prepare' as const,
+          id: validated.id,
+          expectedRevision: validated.expectedRevision,
+          requiresExplicitUserConfirmation: true,
+        }
       },
     }))
   }
