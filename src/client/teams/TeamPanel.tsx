@@ -20,8 +20,9 @@ import css from '../AgentTeam.module.css'
 import { CrownIcon } from '../icons/CrownIcon.js'
 import { memberStatusLabel, TASK_STATE_LABELS, teamStartErrorHint } from '../labels.js'
 import {
-  initialVisibleMemberSlots,
+  loadWorkbenchVisibleSlots,
   reconcileVisibleMemberSlots,
+  saveWorkbenchVisibleSlots,
   sortMembersLeaderFirst,
   toggleVisibleMemberSlot,
 } from '../member-visibility.js'
@@ -119,6 +120,7 @@ export function TeamPanel({
               />
             ))}</div>
         : <TeamWorkbench
+          key={selectedTeam.id}
           team={selectedTeam}
           catalog={catalog}
           assistants={assistants}
@@ -183,10 +185,10 @@ function TeamWorkbench({
   pickWorkspace: () => Promise<WorkspaceChoice | null>
   onChanged: () => Promise<void>
 }): JSX.Element {
-  const members = sortMembersLeaderFirst(Object.values(team.members))
-  const memberIds = members.map(member => member.id)
+  const members = useMemo(() => sortMembersLeaderFirst(Object.values(team.members)), [team.members])
+  const memberIds = useMemo(() => members.map(member => member.id), [members])
   const [snapshot, setSnapshot] = useState<TeamWorkbenchView>()
-  const [visibleSlots, setVisibleSlots] = useState(() => initialVisibleMemberSlots(memberIds))
+  const [visibleSlots, setVisibleSlots] = useState(() => loadWorkbenchVisibleSlots(team.id, memberIds, team.leaderSlotId))
   const [error, setError] = useState<string>()
   const [memberActionError, setMemberActionError] = useState<string>()
   const [memberActionBusy, setMemberActionBusy] = useState(false)
@@ -239,9 +241,14 @@ function TeamWorkbench({
     if (refreshTimer.current !== undefined) clearTimeout(refreshTimer.current)
   }, [])
   useEffect(() => {
-    setVisibleSlots(current => reconcileVisibleMemberSlots(current, previousMemberIds.current, memberIds, team.leaderSlotId))
+    setVisibleSlots(current => {
+      const next = reconcileVisibleMemberSlots(current, previousMemberIds.current, memberIds, team.leaderSlotId)
+      const unchanged = next.length === current.length && next.every((slotId, index) => slotId === current[index])
+      if (!unchanged) saveWorkbenchVisibleSlots(team.id, next)
+      return next
+    })
     previousMemberIds.current = memberIds
-  }, [team.members])
+  }, [team.members, team.leaderSlotId, team.id, memberIds])
   useEffect(() => {
     if (expandedSlotId !== undefined && team.members[expandedSlotId] === undefined) setExpandedSlotId(undefined)
   }, [expandedSlotId, team.members])
@@ -255,7 +262,12 @@ function TeamWorkbench({
   }, [expandedSlotId])
 
   function toggleMember(slotId: string): void {
-    setVisibleSlots(current => toggleVisibleMemberSlot(current, slotId))
+    setVisibleSlots(current => {
+      const next = toggleVisibleMemberSlot(current, slotId)
+      const unchanged = next.length === current.length && next.every((value, index) => value === current[index])
+      if (!unchanged) saveWorkbenchVisibleSlots(team.id, next)
+      return next
+    })
   }
 
   async function removeMember(): Promise<void> {

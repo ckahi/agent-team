@@ -1,19 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   initialVisibleMemberSlots,
+  loadWorkbenchVisibleSlots,
   reconcileVisibleMemberSlots,
+  saveWorkbenchVisibleSlots,
   sortMembersLeaderFirst,
   toggleVisibleMemberSlot,
 } from '../src/client/member-visibility.js'
 
 describe('team member visibility', () => {
-  it('opens every team member without a three-column cap', () => {
-    expect(initialVisibleMemberSlots(['leader', 'member-1', 'member-2', 'member-3'])).toEqual([
+  it('defaults to the leader chat column only on first entry', () => {
+    expect(initialVisibleMemberSlots(['leader', 'member-1', 'member-2', 'member-3'], 'leader')).toEqual(['leader'])
+  })
+
+  it('falls back to every member when no leader slot id is given', () => {
+    expect(initialVisibleMemberSlots(['leader', 'member-1', 'member-2'])).toEqual([
       'leader',
       'member-1',
       'member-2',
-      'member-3',
     ])
+  })
+
+  it('falls back to every member when the leader slot id is not part of the team', () => {
+    expect(initialVisibleMemberSlots(['leader', 'member-1'], 'someone-else')).toEqual(['leader', 'member-1'])
   })
 
   it('keeps every selected member when another member is shown', () => {
@@ -108,5 +117,86 @@ describe('reconcileVisibleMemberSlots with a leader', () => {
       ['leader', 'm1'],
       'leader',
     )).toEqual(['leader', 'm1'])
+  })
+})
+
+describe('workbench visible-slot persistence', () => {
+  const store = new Map<string, string>()
+
+  function stubWindowLocalStorage(): void {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+      },
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    store.clear()
+  })
+
+  it('returns the leader-only default when nothing has been stored yet', () => {
+    stubWindowLocalStorage()
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1', 'm2'], 'leader')).toEqual(['leader'])
+  })
+
+  it('returns the leader-only default when localStorage is unavailable', () => {
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader'])
+  })
+
+  it('restores stored slots filtered to current members with the leader first', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:visible-slots:team-1', JSON.stringify(['m2', 'gone', 'leader', 'm1']))
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1', 'm2'], 'leader')).toEqual(['leader', 'm2', 'm1'])
+  })
+
+  it('falls back to the default when the stored value is not a slot array', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:visible-slots:team-1', '{"broken": true}')
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader'])
+  })
+
+  it('falls back to the default when every stored slot has left the team', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:visible-slots:team-1', JSON.stringify(['gone-1', 'gone-2']))
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader'])
+  })
+
+  it('deduplicates stored slots so corrupted data cannot render duplicate columns', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:visible-slots:team-1', JSON.stringify(['m1', 'm1', 'leader', 'leader', 'm1']))
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader', 'm1'])
+  })
+
+  it('round-trips a customized selection through save and load', () => {
+    stubWindowLocalStorage()
+    saveWorkbenchVisibleSlots('team-1', ['m1', 'leader'])
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1', 'm2'], 'leader')).toEqual(['leader', 'm1'])
+  })
+
+  it('keeps separate selections per team', () => {
+    stubWindowLocalStorage()
+    saveWorkbenchVisibleSlots('team-1', ['m1'])
+    saveWorkbenchVisibleSlots('team-2', ['leader', 'm2'])
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1', 'm2'], 'leader')).toEqual(['m1'])
+    expect(loadWorkbenchVisibleSlots('team-2', ['leader', 'm1', 'm2'], 'leader')).toEqual(['leader', 'm2'])
+  })
+
+  it('ignores storage write failures when saving', () => {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: () => null,
+        setItem: () => { throw new Error('quota exceeded') },
+      },
+    })
+    expect(() => saveWorkbenchVisibleSlots('team-1', ['leader'])).not.toThrow()
+  })
+
+  it('falls back to the default when stored JSON cannot be parsed at all', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:visible-slots:team-1', 'not-json')
+    expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader'])
   })
 })
