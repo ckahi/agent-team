@@ -120,6 +120,20 @@ AssistantBuilder 也用同一个桥（`registerScope` 注册自己的会话范�
 
 **两个现状要知道**：① 任务状态枚举以 `src/domain/schemas.ts` 的 `teamTaskSchema.status` 为准，`labels.ts` 的 `TASK_STATE_LABELS` 必须与之对齐（`running` 译「进行中」而非「运行中」，避免与成员状态混淆；`blocked` 译「受阻」），`tests/client-labels.spec.ts` 有文案表 key 与 schema 枚举同步的守护测试——新增/调整任务状态时两处要一起改；② `dependencyIds` 永远是 `[]`、`FileScopeLease`（文件租约）只在建队时初始化为空——两者都是预留未实现，schema 已铺好，做文件级冲突防护缺的只是获取/释放/校验逻辑。
 
+### 6.8 成员上下文（系统提示词）组装
+
+成员"知道自己是谁、团队里有谁、该怎么协作"，完全靠上线装配时注册进系统提示词的段落。组装发生在 `setup` 回调里（`team-runtime.ts` 760 行起），顺序和内容如下：
+
+1. **预设挂载**（761 行）：`agentPresets.mount` 先挂助手模板指定的 Agent Preset（standard/cordis 等），预设自带的工具与提示词先就位。
+2. **模型选型**（762 行）：`installModelSelection` 把助手模板的 provider/model/reasoningEffort 钉进上下文。
+3. **身份段**（763–775 行，`agent-team:identity:<slotId>`，order 10）：内容来自 `team-prompts.ts` 的 `memberPrompt`——"你是谁、角色是什么（leader/member）、全队在同一个 Workspace、改重叠文件先协调"，末尾拼接助手模板的 `instructions`。
+4. **名册段**（776–780 行，`agent-team:roster:<teamId>`，order 11）：`rosterPrompt` 输出实时成员表（displayName + role + **slotId**，slotId 是 `team_send_message`/任务指派的寻址键）+ 协作协议四句话（leader 用 `team_create_task` 派活、成员用 `team_update_task` 回报、沟通走 `team_send_message`）。leader 没有专属段落，它与普通成员的差异只有 `role` 字段。
+5. **工具装配**（781 行起）：注册四个团队工具（handlers 绑定该成员的 slotId）；按助手模板的 mcpServers/skillAllowlist 做 restrict + guard 白名单；`permissionPresets.set` 落权限。
+
+**核心机制：段落是取数 thunk，不是静态文本**。两个 section 的 `text` 是函数（768、779 行），每次 DSH 组装提示词时重新执行，从 `service.getTeam()` 取**当前聚合**——所以启动团队之后新加的成员会自动出现在所有已在线成员的名册里，移除的成员自动消失；身份段发现自己的槽位已不在聚合中时会改输出 "This Agent Team membership is no longer active."。**改"成员如何理解团队"，入口就是 `team-prompts.ts` 的这两个纯函数**，不用碰装配逻辑；但要想清楚：名册进的是 system prompt，改结构会改变所有成员每次对话的上下文形状。
+
+**装配校验是上线闸门**（882–889 行）：setup 末尾实际执行一次 `systemPrompt.assemble(assembleContextFor(agent))`，检查身份段与名册段都存活在最终 prompt 里。某些 Preset（如 `minimal`）的提示词组装方式会整体替换段落，导致两段消失——此时抛 `PRESET_PROMPT_INCOMPATIBLE` 拒绝上线。这是有意设计：没有身份段/名册段的成员会以普通单 agent 的方式行事，团队机制静默失效，宁可报错。助手模板绑 Preset 时必须选会保留注入段落的（standard/cordis）。
+
 ## 7. 传输层（src/transport/）
 
 `web.ts` 注册三个 exact 路由：RPC 主入口、SSE 事件流（心跳 `sseHeartbeatMs`）、Workspace 文件上传。`contracts.ts` 是两端的**单一事实源**：加方法 = `AGENT_TEAM_METHODS` 加名字 + `AgentTeamRequestMap` 加 payload/result 类型 + web.ts 分发 + client/api.ts 封装。跨端枚举/RPC 参数形态不一致是**无报错静默失败**（空数组单测会掩盖），两边类型都从 contracts 推导，别在 client 里手写结构。
