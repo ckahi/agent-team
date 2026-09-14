@@ -79,6 +79,24 @@ export class TeamInteractionBridge {
     }
   }
 
+  /**
+   * Register the claim listeners inside one agent's own scope.
+   *
+   * Member interactions are dispatched with `scopeTarget(agent, agent)`, and a
+   * scope carrier only admits untagged listeners plus listeners whose scope is
+   * an ancestor of the dispatch key. This plugin package's scope is not in a
+   * member agent's ancestor chain, so the package-level listeners from
+   * `start()` never see agent-scoped requests — registering the same handlers
+   * on the agent context (whose scope tag equals the dispatch key) is what
+   * makes claiming work. The agent fiber disposes these listeners itself.
+   */
+  attachAgentContext(agentCtx: Context): void {
+    agentCtx.on('user-questions/request', (request, next) =>
+      this.claimQuestion(request, next))
+    agentCtx.on('approval/request', (request, next) =>
+      this.claimApproval(request, next))
+  }
+
   list(sessionId: string): PendingInteractionView[] {
     return [...this.records.values()]
       .filter(record => record.sessionId === sessionId)

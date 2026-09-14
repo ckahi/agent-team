@@ -1,6 +1,6 @@
 {
   "name": "@limuyang2/dsh-agent-team",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Multi-agent team management plugin for DeepSeek Harness",
   "repository": {
     "type": "git",

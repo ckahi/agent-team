@@ -791,6 +791,7 @@ export class TeamRuntime {
             this.commands.sendMemberMessage(team.id, member.id, recipientSlotId, content, type)
           ),
         })
+        this.interactions.attachAgentContext(agentCtx)
         const selectedMcpServers = new Set(member.assistantSnapshot.mcpServers)
         const mcpTools = agentCtx.tools.schemas(agent).flatMap(tool => {
           const serverName = mcpServerFromToolName(tool.name)

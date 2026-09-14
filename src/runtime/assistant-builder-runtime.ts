@@ -413,6 +413,7 @@ export class AssistantBuilderRuntime {
         ? undefined
         : 'The built-in Assistant Builder may only read its catalog, prepare a draft, commit an explicitly confirmed draft, and use read-only file tools.')
       this.registerTools(agentCtx, rawSessionId)
+      this.interactions.attachAgentContext(agentCtx)
       const deniedTools = agentCtx.tools.schemas(agent)
         .map(tool => tool.name)
         .filter(name => !allowedTools.has(name) && !ASSISTANT_BUILDER_READONLY_TOOLS.has(name))

@@ -125,6 +125,47 @@ describe('TeamInteractionBridge', () => {
     expect(next).not.toHaveBeenCalled()
     await bridge.dispose()
   })
+  it('claims interactions dispatched inside the agent scope via attachAgentContext', async () => {
+    const { ctx } = contextWithListeners()
+    const onChange = vi.fn()
+    const bridge = new TeamInteractionBridge(ctx, {
+      acceptsSession: id => id === 'session-1',
+      onChange,
+    })
+    bridge.start()
+
+    const listeners = new Map<string, InteractionListener>()
+    const agentCtx = {
+      on(name: string, listener: InteractionListener) {
+        listeners.set(name, listener)
+        return () => { listeners.delete(name) }
+      },
+    } as unknown as Context
+    bridge.attachAgentContext(agentCtx)
+
+    const next = vi.fn()
+    const dispatched = (listeners.get('user-questions/request') as InteractionListener)({
+      questions: [{
+        id: 'language',
+        question: '选择语言？',
+        options: [{ label: 'TypeScript' }],
+      }],
+      agent: agentOf('session-1'),
+    }, next) as Promise<unknown>
+
+    await expect(bridge.list('session-1')).toEqual([expect.objectContaining({ kind: 'question' })])
+    expect(onChange).toHaveBeenCalledWith('session-1')
+    const pendingId = bridge.list('session-1')[0]!.id
+    await bridge.respond('session-1', pendingId, {
+      kind: 'question',
+      answers: [{ id: 'language', selected: ['TypeScript'] }],
+    })
+    await expect(dispatched).resolves.toEqual({
+      answers: [{ id: 'language', selected: ['TypeScript'] }],
+    })
+    expect(next).not.toHaveBeenCalled()
+    await bridge.dispose()
+  })
 })
 
 describe('normalizeQuestionAnswers', () => {
