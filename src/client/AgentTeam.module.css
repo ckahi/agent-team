@@ -2470,6 +2470,15 @@ textarea.input {
   box-shadow: var(--dsw-alias-shadow-l1);
 }
 
+.memberTabFiltered {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.memberTabFiltered:hover {
+  background: var(--dsw-alias-bg-layer-2);
+}
+
 .memberAvatar,
 .emptyAvatar {
   display: inline-grid;
@@ -2531,6 +2540,39 @@ textarea.input {
   align-items: center;
   gap: 7px;
   margin-left: auto;
+}
+
+.activeOnlyToggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.activeOnlyToggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.activeOnlyToggle input {
+  accent-color: var(--dsw-alias-brand-primary);
+}
+
+.workbenchHint {
+  flex: none;
+  padding: 7px 14px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
 }
 
 .manageButton {

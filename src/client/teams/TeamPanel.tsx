@@ -33,6 +33,38 @@ import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
 import { WorkspacePanel } from '../workspace/WorkspacePanel.js'
 
+const ACTIVE_CONVERSATION_STATUSES: ReadonlySet<string> = new Set([
+  'running',
+  'waiting_approval',
+  'error',
+  'starting',
+])
+
+const ONLY_ACTIVE_PREFERENCE_STORAGE_KEY = 'agent-team:workbench:only-active'
+
+function loadOnlyActivePreference(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(ONLY_ACTIVE_PREFERENCE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+/** 持久化「只看活跃」偏好；存储失败（如隐私模式配额受限）静默忽略。 */
+function saveOnlyActivePreference(value: boolean): void {
+  try {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(ONLY_ACTIVE_PREFERENCE_STORAGE_KEY, value ? 'true' : 'false')
+  } catch {
+    // 忽略存储写入失败（隐私模式 / 配额限制），偏好退化为会话内状态
+  }
+}
+
+function isConversationActive(status: string | undefined): boolean {
+  return status !== undefined && ACTIVE_CONVERSATION_STATUSES.has(status)
+}
+
 const runtimeStateClass: Readonly<Record<string, string | undefined>> = {
   offline: css.memberRuntimeOffline,
   starting: css.memberRuntimeStarting,
@@ -196,6 +228,8 @@ function TeamWorkbench({
   const [managementOpen, setManagementOpen] = useState(false)
   const [addMemberOpen, setAddMemberOpen] = useState(false)
   const [expandedSlotId, setExpandedSlotId] = useState<string>()
+  const [onlyActive, setOnlyActive] = useState(() => loadOnlyActivePreference())
+  const [onlyActiveHint, setOnlyActiveHint] = useState<string>()
   const [workspaceVisible, setWorkspaceVisible] = useState(true)
   const [workspaceRefreshSignal, setWorkspaceRefreshSignal] = useState(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>()
@@ -261,6 +295,22 @@ function TeamWorkbench({
     return () => { window.removeEventListener('keydown', closeOnEscape) }
   }, [expandedSlotId])
 
+  useEffect(() => {
+    if (!onlyActive) setOnlyActiveHint(undefined)
+  }, [onlyActive])
+  useEffect(() => {
+    if (expandedSlotId === undefined) return
+    if (onlyActive && !isConversationActive(conversations.get(expandedSlotId)?.status) && expandedSlotId !== team.leaderSlotId) {
+      setExpandedSlotId(undefined)
+    }
+  }, [expandedSlotId, onlyActive, snapshot, team.leaderSlotId])
+
+  function changeOnlyActive(value: boolean): void {
+    setOnlyActive(value)
+    saveOnlyActivePreference(value)
+    setOnlyActiveHint(undefined)
+  }
+
   function toggleMember(slotId: string): void {
     setVisibleSlots(current => {
       const next = toggleVisibleMemberSlot(current, slotId)
@@ -290,22 +340,37 @@ function TeamWorkbench({
   }
 
   const conversations = new Map(snapshot?.conversations.map(item => [item.slotId, item]) ?? [])
-  const visibleMembers = visibleSlots.map(slotId => team.members[slotId]).filter((value): value is TeamView['members'][string] => value !== undefined)
+  const isActiveSlot = (slotId: string): boolean =>
+    slotId === team.leaderSlotId || isConversationActive(conversations.get(slotId)?.status)
+  const tabMembers = members
+  const visibleMembers = visibleSlots
+    .filter(slotId => !onlyActive || isActiveSlot(slotId))
+    .map(slotId => team.members[slotId])
+    .filter((value): value is TeamView['members'][string] => value !== undefined)
 
   return (
     <div className={css.workbench}>
       <div className={css.workbenchMainPane}>
         <div className={css.memberTabs} aria-label="团队成员">
-        {members.map(member => {
+        {tabMembers.map(member => {
           const conversation = conversations.get(member.id)
           const selected = visibleSlots.includes(member.id)
+          const hiddenByFilter = onlyActive && member.role !== 'leader' && !isActiveSlot(member.id)
           return (
             <span key={member.id} className={css.memberTabWrap}>
               <button
                 type="button"
-                className={`${css.memberTab} ${member.role === 'leader' ? '' : css.memberTabWithActions} ${selected ? css.memberTabActive : ''}`}
-                onClick={() => { toggleMember(member.id) }}
+                className={`${css.memberTab} ${member.role === 'leader' ? '' : css.memberTabWithActions} ${selected ? css.memberTabActive : ''} ${hiddenByFilter ? css.memberTabFiltered : ''}`}
+                onClick={() => {
+                  if (hiddenByFilter) {
+                    setOnlyActiveHint('已开启「只看活跃」，请先取消勾选')
+                    return
+                  }
+                  setOnlyActiveHint(undefined)
+                  toggleMember(member.id)
+                }}
                 aria-pressed={selected}
+                title={hiddenByFilter ? '空闲中，已开启只看活跃' : undefined}
               >
                 <span className={css.memberAvatar}>{member.displayName.slice(0, 1).toUpperCase()}</span>
                 <span className={css.memberTabName}>{member.displayName}</span>
@@ -331,6 +396,14 @@ function TeamWorkbench({
             </span>
           )
         })}
+        <label className={css.activeOnlyToggle} title="自动高亮运行中的成员，空闲成员置灰；Leader 始终显示">
+          <input
+            type="checkbox"
+            checked={onlyActive}
+            onChange={event => { changeOnlyActive(event.target.checked) }}
+          />
+          只看活跃
+        </label>
         <span className={css.manageButtonWrap}>
           {!workspaceVisible && (
             <Button
@@ -360,6 +433,7 @@ function TeamWorkbench({
         </span>
         </div>
         {error && <div role="alert" className={css.workbenchError}>{error}</div>}
+        {onlyActiveHint && <div role="status" className={css.workbenchHint}>{onlyActiveHint}</div>}
         {memberActionError && memberToRemove === undefined && (
           <div role="alert" className={css.workbenchError}>{memberActionError}</div>
         )}
