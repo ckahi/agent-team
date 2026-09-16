@@ -28,6 +28,7 @@ import {
 } from '../member-visibility.js'
 import { AnimatedModal, Empty, Field } from '../shared.js'
 import { openTeam } from '../store.js'
+import { isRunForTeam, useCompactRun } from '../state/compact-progress.js'
 import { canRetryTeamStart, isTeamExecuting } from '../team-status.js'
 import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
@@ -298,12 +299,6 @@ function TeamWorkbench({
   useEffect(() => {
     if (!onlyActive) setOnlyActiveHint(undefined)
   }, [onlyActive])
-  useEffect(() => {
-    if (expandedSlotId === undefined) return
-    if (onlyActive && !isConversationActive(conversations.get(expandedSlotId)?.status) && expandedSlotId !== team.leaderSlotId) {
-      setExpandedSlotId(undefined)
-    }
-  }, [expandedSlotId, onlyActive, snapshot, team.leaderSlotId])
 
   function changeOnlyActive(value: boolean): void {
     setOnlyActive(value)
@@ -340,13 +335,30 @@ function TeamWorkbench({
   }
 
   const conversations = new Map(snapshot?.conversations.map(item => [item.slotId, item]) ?? [])
+  const compactRun = useCompactRun()
+  // P-1：仅当前团队的 run 参与渲染，防止跨团队 slotId 碰撞误显 badge
+  const teamCompactRun = isRunForTeam(compactRun, team.id) ? compactRun : undefined
+  const compactingSlotIds = new Set(
+    teamCompactRun?.members.filter(item => item.state === 'compacting').map(item => item.slotId) ?? [],
+  )
+  // P-4：压缩中的空闲成员视同活跃——「只看活跃」勾选时对话列/Tab 保持可见，压缩结束自动回落
   const isActiveSlot = (slotId: string): boolean =>
-    slotId === team.leaderSlotId || isConversationActive(conversations.get(slotId)?.status)
+    slotId === team.leaderSlotId
+    || isConversationActive(conversations.get(slotId)?.status)
+    || compactingSlotIds.has(slotId)
   const tabMembers = members
   const visibleMembers = visibleSlots
     .filter(slotId => !onlyActive || isActiveSlot(slotId))
     .map(slotId => team.members[slotId])
     .filter((value): value is TeamView['members'][string] => value !== undefined)
+
+  // P-5：放大层收起判定与 isActiveSlot 同源（P-4 压缩中视同活跃），避免压缩中成员放大视图被误收起；teamCompactRun 变化时重估（压缩结束回落即收起）
+  useEffect(() => {
+    if (expandedSlotId === undefined) return
+    if (onlyActive && expandedSlotId !== team.leaderSlotId && !isActiveSlot(expandedSlotId)) {
+      setExpandedSlotId(undefined)
+    }
+  }, [expandedSlotId, onlyActive, snapshot, team.leaderSlotId, teamCompactRun])
 
   return (
     <div className={css.workbench}>
@@ -376,6 +388,7 @@ function TeamWorkbench({
                 <span className={css.memberTabName}>{member.displayName}</span>
                 {member.role === 'leader' && <CrownIcon size={15} className={css.leaderCrown} title="Leader" />}
                 <span className={`${css.statusDot} ${statusDotStateClass[conversation?.status ?? 'offline'] ?? css.statusIdle}`} />
+                {compactingSlotIds.has(member.id) && <span className={css.memberTabCompactBadge}>压缩中</span>}
               </button>
               {member.role !== 'leader' && (
                 <span className={css.memberTabActions}>

@@ -2514,6 +2514,17 @@ textarea.input {
   border-radius: 50%;
 }
 
+.memberTabCompactBadge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
 .statusIdle {
   background: var(--dsw-alias-label-caption);
 }

@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   IconCloseOutline16,
   IconPaperclipOutline16,
@@ -10,6 +10,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   CatalogView,
+  CommandDescriptorView,
   ConversationNode,
   MemberConversationView,
   TeamView,
@@ -19,13 +20,26 @@ import { callAgentTeam, uploadAgentTeamFile } from '../api.js'
 import { MARKDOWN_LABELS } from '../markdown-labels.js'
 import {
   composerTriggerAt,
+  matchingCommands,
   matchingUserSkills,
+  parseSlashLine,
   replaceComposerTrigger,
   scrollTopForActiveOption,
+  TEAM_COMPACT_COMMAND,
   type ComposerTrigger,
 } from '../composer-triggers.js'
 import css from './ConversationColumn.module.css'
 import { mergeConversationNodes } from '../conversation-nodes.js'
+import {
+  beginCompactRun,
+  compactProgressSummary,
+  endCompactRun,
+  isRunForTeam,
+  markMemberCompacting,
+  markMemberSkipped,
+  markMemberSucceeded,
+  useCompactRun,
+} from '../state/compact-progress.js'
 import { insertWorkspaceFileMention, workspaceFileMention } from '../file-mentions.js'
 import { CrownIcon } from '../icons/CrownIcon.js'
 import { DeepThinkIcon } from '../icons/DeepThinkIcon.js'
@@ -43,6 +57,7 @@ interface ComposerCandidate {
   label: string
   description: string
   replacement: string
+  group: 'team' | 'commands' | 'skills'
 }
 
 export function ConversationColumn({
@@ -79,6 +94,8 @@ export function ConversationColumn({
   const [composerCandidateIndex, setComposerCandidateIndex] = useState(0)
   const [composerCandidatesLoading, setComposerCandidatesLoading] = useState(false)
   const [composerCandidatesError, setComposerCandidatesError] = useState<string>()
+  const [localNotices, setLocalNotices] = useState<ConversationNode[]>([])
+  const memberCommandsRef = useRef<Map<string, CommandDescriptorView[]>>(new Map())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const composerTriggerOptionsRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -90,7 +107,13 @@ export function ConversationColumn({
   const composerCandidateGeneration = useRef(0)
   const canChat = team.state === 'active' && (member.role === 'leader' || team.directMemberChat)
   const running = conversation?.status === 'running'
-  const visibleNodes = mergeConversationNodes(conversation?.nodes ?? [], pendingMessages)
+  const compactRun = useCompactRun()
+  // P-1：仅当前团队的 run 参与渲染，防止跨团队 slotId 碰撞误显 badge
+  const teamCompactRun = isRunForTeam(compactRun, team.id) ? compactRun : undefined
+  const compactSummary = teamCompactRun !== undefined ? compactProgressSummary(teamCompactRun) : undefined
+  const memberCompacting = teamCompactRun?.members.find(item => item.slotId === member.id && item.state === 'compacting')
+  const isCompactInitiator = teamCompactRun?.initiatorSlotId === member.id
+  const visibleNodes = mergeConversationNodes(conversation?.nodes ?? [], [...pendingMessages, ...localNotices])
   const pendingInteractions = conversation?.pendingInteractions ?? []
   const statusLabel = pendingInteractions.some(interaction => interaction.kind === 'approval')
     ? '等待审批'
@@ -147,7 +170,7 @@ export function ConversationColumn({
       if (timeline !== null) timeline.scrollTop = timeline.scrollHeight
     })
     return () => { cancelAnimationFrame(frame) }
-  }, [conversation?.throughSeq, pendingInteractions.length, pendingMessages.length])
+  }, [conversation?.throughSeq, pendingInteractions.length, pendingMessages.length, localNotices.length])
 
   useEffect(() => {
     const generation = ++composerCandidateGeneration.current
@@ -163,19 +186,44 @@ export function ConversationColumn({
       setComposerCandidates([])
       setComposerCandidatesLoading(true)
       const timer = window.setTimeout(() => {
-        void callAgentTeam('skill.catalog', {
-          agentPresetId: member.assistantSnapshot.agentPresetId,
-        }).then(catalog => {
+        const cachedCommands = memberCommandsRef.current.get(member.id)
+        const commandsReady = cachedCommands !== undefined
+          ? Promise.resolve(cachedCommands)
+          : callAgentTeam('team.command.list', { teamId: team.id, slotId: member.id })
+        void Promise.all([
+          commandsReady,
+          callAgentTeam('skill.catalog', {
+            agentPresetId: member.assistantSnapshot.agentPresetId,
+          }),
+        ]).then(([commands, catalog]) => {
           if (generation !== composerCandidateGeneration.current) return
+          memberCommandsRef.current.set(member.id, commands)
           const selected = new Set(member.assistantSnapshot.skillAllowlist)
-          const candidates = matchingUserSkills(catalog.skills, selected, query)
+          const teamCandidates = member.role === 'leader' && TEAM_COMPACT_COMMAND.toLocaleLowerCase().includes(query)
+            ? [{
+                id: `command:${TEAM_COMPACT_COMMAND}`,
+                label: `/${TEAM_COMPACT_COMMAND}`,
+                description: '压缩全体成员上下文（仅队长）',
+                replacement: `/${TEAM_COMPACT_COMMAND}`,
+                group: 'team' as const,
+              }]
+            : []
+          const commandCandidates = matchingCommands(commands, query).map(command => ({
+            id: `command:${command.name}`,
+            label: `/${command.name}`,
+            description: command.description,
+            replacement: `/${command.name}`,
+            group: 'commands' as const,
+          }))
+          const skillCandidates = matchingUserSkills(catalog.skills, selected, query)
             .map(skill => ({
               id: `skill:${skill.name}`,
               label: `/${skill.name}`,
               description: skill.description,
               replacement: `/${skill.name}`,
+              group: 'skills' as const,
             }))
-          setComposerCandidates(candidates)
+          setComposerCandidates([...teamCandidates, ...commandCandidates, ...skillCandidates])
           setComposerCandidatesLoading(false)
         }).catch(cause => {
           if (generation !== composerCandidateGeneration.current) return
@@ -201,6 +249,7 @@ export function ConversationColumn({
           label: entry.path,
           description: 'Workspace 文件',
           replacement: workspaceFileMention(entry.path),
+          group: 'skills' as const,
         })))
         setComposerCandidatesLoading(false)
       }).catch(cause => {
@@ -211,7 +260,7 @@ export function ConversationColumn({
       })
     }, 140)
     return () => { window.clearTimeout(timer) }
-  }, [composerTrigger?.kind, composerTrigger?.query, skillNamesKey, team.id])
+  }, [composerTrigger?.kind, composerTrigger?.query, skillNamesKey, team.id, member.id, member.role])
 
   useEffect(() => {
     const container = composerTriggerOptionsRef.current
@@ -244,40 +293,183 @@ export function ConversationColumn({
     })
   }
 
+  function pushLocalNotice(text: string, tone: 'neutral' | 'error' | 'warning'): void {
+    setLocalNotices(current => [
+      ...current.slice(-9),
+      {
+        id: `local-notice:${crypto.randomUUID()}`,
+        kind: 'notice' as const,
+        seq: Number.MAX_SAFE_INTEGER,
+        time: Date.now(),
+        tone,
+        text,
+      },
+    ])
+  }
+
   async function send(event: FormEvent): Promise<void> {
     event.preventDefault()
     const message = content.trim()
     if (!message || sendInFlight.current) return
-    const pendingId = `pending:${crypto.randomUUID()}`
-    const pending: ConversationNode = {
-      id: pendingId,
-      kind: 'user',
-      seq: Number.MAX_SAFE_INTEGER,
-      time: Date.now(),
-      text: message,
-    }
+    // 进入提交即置位（含命令分流的 list 等待期），杜绝连按 Enter 的重入窗口
     sendInFlight.current = true
     setSending(true)
-    setContent('')
-    setComposerTrigger(undefined)
-    setPendingMessages(current => [...current, pending])
-    stickToBottom.current = true
     try {
-      const delivered = await callAgentTeam('team.message.send', {
-        teamId: team.id,
-        targetSlotId: member.id,
-        content: message,
-      })
-      setPendingMessages(current => current.map(node => node.id === pendingId ? { ...node, id: delivered.id } : node))
-      setError(undefined)
-      await onSent()
-    } catch (cause) {
-      setPendingMessages(current => current.filter(node => node.id !== pendingId))
-      setContent(current => current.length === 0 ? message : current)
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const parsed = parseSlashLine(message)
+      if (parsed !== undefined) {
+        let commands = memberCommandsRef.current.get(member.id)
+        if (commands === undefined) {
+          try {
+            commands = await callAgentTeam('team.command.list', { teamId: team.id, slotId: member.id })
+            memberCommandsRef.current.set(member.id, commands)
+          } catch {
+            commands = []
+          }
+        }
+        if (parsed.name === TEAM_COMPACT_COMMAND) {
+          await submitCompactAll(message)
+          return
+        }
+        if (commands.some(command => command.name === parsed.name)) {
+          await submitCommand(message)
+          return
+        }
+      }
+      const pendingId = `pending:${crypto.randomUUID()}`
+      const pending: ConversationNode = {
+        id: pendingId,
+        kind: 'user',
+        seq: Number.MAX_SAFE_INTEGER,
+        time: Date.now(),
+        text: message,
+      }
+      setContent('')
+      setComposerTrigger(undefined)
+      setPendingMessages(current => [...current, pending])
+      stickToBottom.current = true
+      try {
+        const delivered = await callAgentTeam('team.message.send', {
+          teamId: team.id,
+          targetSlotId: member.id,
+          content: message,
+        })
+        setPendingMessages(current => current.map(node => node.id === pendingId ? { ...node, id: delivered.id } : node))
+        setError(undefined)
+        await onSent()
+      } catch (cause) {
+        setPendingMessages(current => current.filter(node => node.id !== pendingId))
+        setContent(current => current.length === 0 ? message : current)
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
     } finally {
       sendInFlight.current = false
       setSending(false)
+    }
+  }
+
+  /** 执行宿主官方斜杠命令（以当前列成员会话身份），结果以本地 notice 呈现。 */
+  async function submitCommand(line: string): Promise<void> {
+    setContent('')
+    setComposerTrigger(undefined)
+    stickToBottom.current = true
+    try {
+      const execution = await callAgentTeam('team.command.execute', {
+        teamId: team.id,
+        slotId: member.id,
+        line,
+      })
+      const name = parseSlashLine(line)?.name ?? ''
+      pushLocalNotice(
+        execution.result.kind === 'success'
+          ? `/${name} ${execution.result.text ?? '已执行'}`
+          : `/${name} ${execution.result.text}`,
+        execution.result.kind === 'success' ? 'neutral' : 'error',
+      )
+      setError(undefined)
+      await onSent()
+    } catch (cause) {
+      setContent(current => current.length === 0 ? line : current)
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  /** /team-compact：队长并行压缩全队上下文（各成员独立会话，无共享资源竞争），过程状态由 compact-progress 逐成员驱动，最后渲染汇总 notice。 */
+  async function submitCompactAll(line: string): Promise<void> {
+    // 本地预判 leader 身份：非队长直接提示，不发起 RPC，输入保留（host 校验保留作双保险）
+    if (member.role !== 'leader') {
+      pushLocalNotice('「/team-compact」仅队长（Leader）可执行', 'warning')
+      return
+    }
+    setContent('')
+    setComposerTrigger(undefined)
+    stickToBottom.current = true
+    // 压缩范围与宿主 compactTeamMembers 一致：team.members 全员，含 Leader 本人
+    const roster = Object.values(team.members).map(entry => ({ slotId: entry.id, displayName: entry.displayName }))
+    beginCompactRun(team.id, member.id, roster)
+    type CompactOutcome =
+      | { kind: 'compacted'; displayName: string }
+      | { kind: 'skipped'; displayName: string; reason: string }
+      | { kind: 'failed'; displayName: string; reason: string }
+    // 两阶段并行：先全员标记 compacting（badge 同时亮起），再并发发起全部 execute，逐个 settle 独立翻转
+    for (const entry of roster) markMemberCompacting(entry.slotId)
+    const tasks = roster.map(entry => (async (): Promise<CompactOutcome> => {
+      try {
+        const execution = await callAgentTeam('team.command.execute', {
+          teamId: team.id,
+          slotId: entry.slotId,
+          line: '/compact',
+        })
+        if (execution.result.kind === 'success') {
+          markMemberSucceeded(entry.slotId)
+          return { kind: 'compacted', displayName: entry.displayName }
+        }
+        // 错误结果（如成员忙碌）= 跳过，原因取宿主返回文本
+        const reason = execution.result.text || '命令执行失败'
+        markMemberSkipped(entry.slotId, reason)
+        return { kind: 'skipped', displayName: entry.displayName, reason }
+      } catch (cause) {
+        // RPC 异常（超时/断连等）= 失败，原因取异常信息
+        const reason = cause instanceof Error ? cause.message : String(cause)
+        markMemberSkipped(entry.slotId, reason)
+        return { kind: 'failed', displayName: entry.displayName, reason }
+      }
+    })())
+    try {
+      // 任务自身不 reject（全路径折叠为 outcome），rejected 分支仅作防御
+      const settled = await Promise.allSettled(tasks)
+      const outcomes = settled.map(result => result.status === 'fulfilled'
+        ? result.value
+        : { kind: 'failed' as const, displayName: '未知成员', reason: '任务异常' })
+      const compactedNames: string[] = []
+      const skippedEntries: Extract<CompactOutcome, { kind: 'skipped' }>[] = []
+      const failedEntries: Extract<CompactOutcome, { kind: 'failed' }>[] = []
+      for (const outcome of outcomes) {
+        if (outcome.kind === 'compacted') compactedNames.push(outcome.displayName)
+        else if (outcome.kind === 'skipped') skippedEntries.push(outcome)
+        else failedEntries.push(outcome)
+      }
+      // P-3：notice 不支持换行渲染，逐成员一条独立 notice（roster 序，三桶语义区分），末尾汇总一行
+      for (const outcome of outcomes) {
+        if (outcome.kind === 'compacted') pushLocalNotice(`已压缩：${outcome.displayName}`, 'neutral')
+        else if (outcome.kind === 'skipped') pushLocalNotice(`已跳过：${outcome.displayName}（${outcome.reason}）`, 'warning')
+        else pushLocalNotice(`压缩失败：${outcome.displayName}（${outcome.reason}）`, 'error')
+      }
+      if (outcomes.length === 0) {
+        pushLocalNotice('全队上下文压缩完成：没有可处理的成员', 'warning')
+      } else {
+        pushLocalNotice(
+          `全队上下文压缩完成 — 已完成 ${compactedNames.length} / 跳过 ${skippedEntries.length} / 失败 ${failedEntries.length}`,
+          compactedNames.length === 0 ? 'warning' : 'neutral',
+        )
+      }
+      setError(undefined)
+      await onSent()
+    } catch (cause) {
+      setContent(current => current.length === 0 ? line : current)
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      // 全部成员 settle 后才释放 sendInFlight 并清除进度状态（badge/横幅消失）
+      endCompactRun()
     }
   }
 
@@ -399,6 +591,9 @@ export function ConversationColumn({
           </div>
         </div>
         <div className={css.columnHeaderActions}>
+          {memberCompacting !== undefined && (
+            <span className={css.columnCompactBadge} title={`${member.displayName} 的上下文正在压缩`}>压缩中</span>
+          )}
           <span className={`${css.columnStatus} ${statusClass ?? ''}`}>{statusLabel}</span>
           {expanded && (
             <Tooltip label="关闭放大对话" side="bottom" delayMs={400}>
@@ -415,6 +610,13 @@ export function ConversationColumn({
           )}
         </div>
       </header>
+      {isCompactInitiator && teamCompactRun !== undefined && compactSummary !== undefined && (
+        <div className={css.compactProgressBanner} role="status">
+          {teamCompactRun.members.some(item => item.state === 'compacting')
+            ? `正在压缩 ${teamCompactRun.members.filter(item => item.state === 'compacting').length} 个成员…`
+            : '压缩收尾中…'}
+        </div>
+      )}
       <div
         className={css.timeline}
         ref={timelineRef}
@@ -454,29 +656,42 @@ export function ConversationColumn({
             id={composerMenuId}
             className={css.composerTriggerMenu}
             role="listbox"
-            aria-label={composerTrigger.kind === 'skill' ? 'Skill 候选' : 'Workspace 文件候选'}
+            aria-label={composerTrigger.kind === 'skill' ? '命令与 Skill 候选' : 'Workspace 文件候选'}
           >
             <div className={css.composerTriggerHeading}>
-              <strong>{composerTrigger.kind === 'skill' ? 'Skills' : 'Workspace 文件'}</strong>
+              <strong>{composerTrigger.kind === 'skill' ? '命令与 Skills' : 'Workspace 文件'}</strong>
               <span>↑↓ 选择 · Enter 插入 · Esc 关闭</span>
             </div>
             <div ref={composerTriggerOptionsRef} className={css.composerTriggerOptions}>
-              {composerCandidates.map((candidate, index) => (
-                <button
-                  id={`${composerMenuId}-${index}`}
-                  key={candidate.id}
-                  type="button"
-                  role="option"
-                  aria-selected={index === composerCandidateIndex}
-                  className={`${css.composerTriggerOption} ${index === composerCandidateIndex ? css.composerTriggerOptionActive : ''}`}
-                  onMouseDown={event => { event.preventDefault() }}
-                  onMouseEnter={() => { setComposerCandidateIndex(index) }}
-                  onClick={() => { acceptComposerCandidate(candidate) }}
-                >
-                  <strong>{candidate.label}</strong>
-                  <span>{candidate.description}</span>
-                </button>
-              ))}
+              {composerCandidates.map((candidate, index) => {
+                const previous = composerCandidates[index - 1]
+                const showGroup = composerTrigger.kind === 'skill'
+                  && (previous === undefined || previous.group !== candidate.group)
+                const groupLabel = candidate.group === 'team'
+                  ? '团队操作'
+                  : candidate.group === 'commands'
+                    ? `命令 · 对 ${member.displayName} 执行`
+                    : 'Skills'
+                return (
+                  <Fragment key={candidate.id}>
+                    {showGroup && <span className={css.composerTriggerGroup}>{groupLabel}</span>}
+                    <button
+                      id={`${composerMenuId}-${index}`}
+                      type="button"
+                      role="option"
+                      aria-selected={index === composerCandidateIndex}
+                      className={`${css.composerTriggerOption} ${index === composerCandidateIndex ? css.composerTriggerOptionActive : ''}`}
+                      title={candidate.group === 'commands' ? `以 ${member.displayName} 的会话身份执行；部分命令的交互面板仅在主界面提供` : undefined}
+                      onMouseDown={event => { event.preventDefault() }}
+                      onMouseEnter={() => { setComposerCandidateIndex(index) }}
+                      onClick={() => { acceptComposerCandidate(candidate) }}
+                    >
+                      <strong>{candidate.label}</strong>
+                      <span>{candidate.description}</span>
+                    </button>
+                  </Fragment>
+                )
+              })}
               {composerCandidatesLoading && <span className={css.composerTriggerEmpty}>正在搜索…</span>}
               {!composerCandidatesLoading && composerCandidatesError !== undefined && (
                 <span className={css.composerTriggerEmpty}>{composerCandidatesError}</span>
@@ -484,8 +699,13 @@ export function ConversationColumn({
               {!composerCandidatesLoading && composerCandidatesError === undefined && composerCandidates.length === 0 && (
                 <span className={css.composerTriggerEmpty}>
                   {composerTrigger.kind === 'skill'
-                    ? '当前成员没有匹配的已加载 Skill'
+                    ? '没有匹配的命令或已加载 Skill'
                     : '没有匹配的 Workspace 文件'}
+                </span>
+              )}
+              {composerTrigger.kind === 'skill' && (
+                <span className={css.composerTriggerEmpty}>
+                  命令以「{member.displayName}」的会话身份执行；部分命令的交互面板仅在主界面提供
                 </span>
               )}
             </div>

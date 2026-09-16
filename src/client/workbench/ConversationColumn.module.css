@@ -217,6 +217,28 @@
   font-weight: 600;
 }
 
+.columnCompactBadge {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.compactProgressBanner {
+  flex: none;
+  padding: 6px 12px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 12px;
+  line-height: 18px;
+  border-left: 2px solid var(--dsw-alias-state-business-primary);
+  font-weight: 600;
+}
+
 .timeline {
   flex: 1;
   min-height: 0;
@@ -764,6 +786,15 @@
   max-height: 240px;
   overflow-y: auto;
   padding: 5px;
+}
+
+.composerTriggerGroup {
+  display: block;
+  padding: 8px 8px 3px;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .composerTriggerOption {
