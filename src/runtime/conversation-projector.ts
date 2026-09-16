@@ -3,6 +3,19 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TeamAggregate, TeamMessage } from '../domain/types.js'
 import type { ConversationNode, MemberConversationView } from '../transport/contracts.js'
 
+/**
+ * 宿主 compaction 事件的会话词汇（packages/compaction 的 SessionEventMap 合并），
+ * 宿主包未在插件依赖中发布类型，这里只声明投影用到的字段。
+ */
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    'compaction/summary': { compactionId: string; shadowedSeqs: readonly number[] }
+    'compaction/prune': { shadowedSeqs: readonly number[] }
+    'compaction/start': { compactionId: string }
+    'compaction/end': { compactionId: string; error?: string }
+  }
+}
+
 interface TeamProjectionContext {
   team: Pick<TeamAggregate, 'leaderSlotId' | 'members' | 'retiredSessions'>
   messages: readonly TeamMessage[]
@@ -53,10 +66,39 @@ export function projectConversation(
   const nodes: ConversationNode[] = []
   const tools = new Map<string, number>()
   const teamMessages = new Map(teamContext?.messages.map(message => [message.id, message]) ?? [])
+  // compaction 折叠：被替换的历史事件不再投影；summary 事件提供「已压缩 N 条」计数。
+  // 被替换事件的时间序早于 summary 事件，需先全量预扫描再投影。
+  const shadowedSeqs = new Set<number>()
+  const compactionCounts = new Map<string, number>()
+  for (const event of events) {
+    if (event.type === 'compaction/summary') {
+      for (const seq of event.data.shadowedSeqs) shadowedSeqs.add(Number(seq))
+      compactionCounts.set(event.data.compactionId, event.data.shadowedSeqs.length)
+    } else if (event.type === 'compaction/prune') {
+      for (const seq of event.data.shadowedSeqs) shadowedSeqs.add(Number(seq))
+    }
+  }
 
   for (const event of events) {
+    if (shadowedSeqs.has(event.seq)) continue
+    if (event.type === 'compaction/summary'
+      || event.type === 'compaction/prune'
+      || event.type === 'compaction/start'
+      || event.type === 'compaction/end') continue
     switch (event.type) {
       case 'user/message': {
+        if (isCompactionCheckpointSource(event.data.source)) {
+          const count = compactionCounts.get(event.data.source.compactionId)
+          nodes.push({
+            id: String(event.data.id),
+            kind: 'notice',
+            seq: event.seq,
+            time: event.time,
+            tone: 'neutral',
+            text: count === undefined ? '已压缩历史消息' : `已压缩 ${count} 条历史`,
+          })
+          break
+        }
         if (!isVisibleUserSource(event.data.source)) break
         const text = textOf(event.data.content)
         if (text.length > 0) {
@@ -253,6 +295,16 @@ function isVisibleUserSource(source: MessageSource): boolean {
   if (source.kind === 'user') return true
   if (source.kind !== 'plugin') return false
   return source.plugin === 'dsh-agent-team' && source.form === 'relay'
+}
+
+/**
+ * compaction 检查点消息（source: {kind:'plugin', plugin:'compact', compactionId}）。
+ * 摘要内容不按普通用户消息渲染，折叠为一条简洁的「已压缩 N 条历史」notice。
+ */
+function isCompactionCheckpointSource(
+  source: MessageSource,
+): source is MessageSource & { plugin: 'compact'; compactionId: string } {
+  return source.kind === 'plugin' && (source as { plugin?: unknown }).plugin === 'compact'
 }
 
 function textOf(blocks: readonly ContentBlock[]): string {

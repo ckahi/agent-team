@@ -30,6 +30,7 @@ export const name = 'agent-team'
 export const inject = [
   'agents',
   'agentPresets',
+  'commands',
   'llm',
   'permissionPresets',
   'sessionPersistence',
@@ -72,7 +73,7 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
     )
     service.attachRuntime(runtime)
     service.attachAssistantBuilderRuntime(assistantBuilderRuntime)
-    transport = registerWebTransport(ctx, config, service)
+    transport = registerWebTransport(ctx, config, service, runtime)
     disposeNativePicker = registerNativeDirectoryPicker(ctx)
     ctx.effect(() => async () => {
       disposeNativePicker?.()

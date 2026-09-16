@@ -19,7 +19,10 @@ export async function callAgentTeam<M extends AgentTeamMethod>(
 ): Promise<AgentTeamResult<M>> {
   const [payload, expectedRevision] = args
   const controller = new AbortController()
-  const timeoutMs = method === 'team.reset' || method === 'team.dissolve' ? 60_000 : 10_000
+  // 压缩/命令执行可能在宿主侧等待模型调用，给更长超时
+  const timeoutMs = method === 'team.reset' || method === 'team.dissolve' || method === 'team.command.execute' || method === 'team.command.compactAll'
+    ? 120_000
+    : 10_000
   const timeout = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
     const response = await fetch(AGENT_TEAM_API_PATH, {

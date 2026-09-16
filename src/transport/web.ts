@@ -9,6 +9,7 @@ import {
   AGENT_TEAM_EVENTS_PATH,
   AGENT_TEAM_METHODS,
   AGENT_TEAM_UPLOAD_PATH,
+  type AgentTeamCommandBridge,
   type AgentTeamRequest,
   type AgentTeamResponse,
 } from './contracts.js'
@@ -46,6 +47,7 @@ export function registerWebTransport(
   ctx: Context,
   config: Config,
   service: AgentTeamService,
+  commands: AgentTeamCommandBridge,
 ): WebTransport {
   const clients = new Set<ServerResponse>()
   const unsubscribe = service.subscribe(change => broadcast(clients, change))
@@ -58,7 +60,7 @@ export function registerWebTransport(
     kind: 'exact',
     path: AGENT_TEAM_API_PATH,
     handler: async (request, response) => {
-      await handleApi(request, response, config, service, ctx)
+      await handleApi(request, response, config, service, ctx, commands)
     },
   })
   const disposeEvents = ctx.webServer.register({
@@ -134,6 +136,7 @@ async function handleApi(
   config: Config,
   service: AgentTeamService,
   ctx: Context,
+  commands: AgentTeamCommandBridge,
 ): Promise<void> {
   if (request.method !== 'POST') {
     writeJson(response, 405, failure('unknown', 'METHOD_NOT_ALLOWED', 'Only POST is supported'))
@@ -159,8 +162,17 @@ async function handleApi(
     return
   }
 
+  // 命令执行等长操作以客户端连接为取消边界：连接提前关闭时中止宿主命令。
+  // 挂在 response 的 'close' 上：IncomingMessage 的 'close' 在 body 读尽时即发射
+  // （Node ≥15），会错过客户端断连；response 'close' 在连接断开或响应结束时发射，
+  // 用 writableEnded 区分——正常完成后不 abort，断连（writableEnded=false）才 abort。
+  const abortController = new AbortController()
+  response.once('close', () => {
+    if (!response.writableEnded) abortController.abort()
+  })
+
   try {
-    const value = await dispatch(service, parsed)
+    const value = await dispatch(service, parsed, commands, abortController.signal)
     writeJson(response, 200, { requestId: parsed.requestId, ok: true, value })
   } catch (error) {
     if (!isAgentTeamError(error) && !(error instanceof z.ZodError)) {
@@ -200,7 +212,12 @@ function handleEvents(
   response.once('close', close)
 }
 
-async function dispatch(service: AgentTeamService, request: AgentTeamRequest): Promise<unknown> {
+async function dispatch(
+  service: AgentTeamService,
+  request: AgentTeamRequest,
+  commands: AgentTeamCommandBridge,
+  signal: AbortSignal,
+): Promise<unknown> {
   const options = request.expectedRevision === undefined
     ? {}
     : { expectedRevision: request.expectedRevision }
@@ -425,6 +442,22 @@ async function dispatch(service: AgentTeamService, request: AgentTeamRequest): P
         theme: z.enum(['light', 'dark']),
       }).strict().parse(request.payload)
       return service.getWorkspaceDiff(payload.teamId, payload.path, payload.scope, payload.layout, payload.theme)
+    }
+    case 'team.command.list': {
+      const payload = z.object({ teamId: z.string().min(1), slotId: z.string().min(1) }).strict().parse(request.payload)
+      return commands.listMemberCommands(payload.teamId, payload.slotId)
+    }
+    case 'team.command.execute': {
+      const payload = z.object({
+        teamId: z.string().min(1),
+        slotId: z.string().min(1),
+        line: z.string().trim().min(2).max(8_000),
+      }).strict().parse(request.payload)
+      return commands.executeMemberCommand(payload.teamId, payload.slotId, payload.line, signal)
+    }
+    case 'team.command.compactAll': {
+      const payload = z.object({ teamId: z.string().min(1), slotId: z.string().min(1) }).strict().parse(request.payload)
+      return commands.compactAllMembers(payload.teamId, payload.slotId)
     }
     case 'team.dissolve': {
       const payload = z.object({ teamId: z.string().min(1), confirmation: z.string() }).strict().parse(request.payload)

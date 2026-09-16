@@ -168,6 +168,58 @@ describe('projectConversation', () => {
       relatedTaskId: 'task-1',
     }])
   })
+
+  it('folds compaction checkpoints into a counted notice and drops shadowed history', () => {
+    const projected = projectConversation([
+      event(0, 'user/message', {
+        id: 'user-old', role: 'user', source: { kind: 'user' },
+        content: [{ type: 'text', text: '被压缩的早期消息' }],
+      }),
+      event(1, 'assistant/message', {
+        turn: 1, step: 1,
+        message: {
+          id: 'assistant-old', role: 'assistant', source: { kind: 'model', provider: 'openai', model: 'codex' },
+          content: [{ type: 'text', text: '被压缩的早期回复' }],
+        },
+        stream: [],
+      }),
+      event(2, 'compaction/summary', {
+        compactionId: 'cmp-1',
+        shadowedSeqs: [0, 1],
+        shadowedTokenCount: 900,
+      }),
+      event(3, 'user/message', {
+        id: 'compact-checkpoint', role: 'user',
+        source: { kind: 'plugin', plugin: 'compact', compactionId: 'cmp-1' },
+        content: [{ type: 'text', text: 'summary text' }],
+      }),
+      event(4, 'user/message', {
+        id: 'user-new', role: 'user', source: { kind: 'user' },
+        content: [{ type: 'text', text: '压缩后的新消息' }],
+      }),
+    ])
+
+    expect(projected.nodes).toEqual([
+      expect.objectContaining({ kind: 'notice', tone: 'neutral', text: '已压缩 2 条历史' }),
+      expect.objectContaining({ kind: 'user', text: '压缩后的新消息' }),
+    ])
+    expect(JSON.stringify(projected.nodes)).not.toContain('被压缩的早期')
+    expect(JSON.stringify(projected.nodes)).not.toContain('summary text')
+  })
+
+  it('renders a compaction checkpoint without a summary event as an uncounted notice', () => {
+    const projected = projectConversation([
+      event(0, 'user/message', {
+        id: 'compact-checkpoint', role: 'user',
+        source: { kind: 'plugin', plugin: 'compact', compactionId: 'cmp-2' },
+        content: [{ type: 'text', text: 'summary' }],
+      }),
+    ])
+
+    expect(projected.nodes).toEqual([
+      expect.objectContaining({ kind: 'notice', tone: 'neutral', text: '已压缩历史消息' }),
+    ])
+  })
 })
 
 describe('projectContextUsage', () => {

@@ -21,7 +21,11 @@ import type {
   TeamMessage,
 } from '../domain/types.js'
 import type { AgentTeamService } from '../service/agent-team-service.js'
+import type { AgentTeamCommandBridge } from '../transport/contracts.js'
 import type {
+  CommandCompactAllView,
+  CommandDescriptorView,
+  CommandExecutionView,
   InteractionResponseInput,
   MemberConversationView,
   TeamWorkbenchView,
@@ -44,6 +48,38 @@ interface OwnedAgent {
   slotId: string
   handle: AgentHandle
   modelSelection: ModelSelectionRef
+}
+
+/**
+ * 宿主 `commands` 服务（packages/interaction/commands）的最小结构化投影。
+ * 宿主包未在插件依赖中发布类型，这里只声明本插件实际调用的两个 Remote 方法；
+ * 结构与宿主 `CommandRuntime` 兼容，运行时由 inject 'commands' 保证可用。
+ */
+interface HostCommandDescriptor {
+  readonly name: string
+  readonly description: string
+  readonly input?: { readonly hint: string; readonly attachments?: boolean }
+}
+
+interface HostCommandExecution {
+  readonly commandId: string
+  readonly result:
+    | { readonly kind: 'success'; readonly text?: string }
+    | { readonly kind: 'error'; readonly text: string }
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    commands: {
+      list(agent: unknown): readonly HostCommandDescriptor[]
+      execute(
+        agent: unknown,
+        line: string,
+        attachments: readonly unknown[],
+        signal: AbortSignal,
+      ): Promise<HostCommandExecution | undefined>
+    }
+  }
 }
 
 export class TeamRuntime {
@@ -181,6 +217,59 @@ export class TeamRuntime {
       throw new AgentTeamError('INTERACTION_NOT_FOUND', '该交互请求不属于指定的团队成员')
     }
     await this.interactions.respond(member.sessionId, interactionId, response)
+  }
+
+  /** 列出成员可用的宿主斜杠命令（完整指令集，UI 不做裁剪）。 */
+  async listMemberCommands(teamId: string, slotId: string): Promise<CommandDescriptorView[]> {
+    const team = this.service.getTeam(teamId)
+    const member = team.members[slotId]
+    if (member === undefined) throw new AgentTeamError('MEMBER_NOT_FOUND', `Unknown member '${slotId}'`)
+    const owned = this.requireOwned(member.sessionId)
+    return this.ctx.commands.list(owned.handle.agent).map(descriptor => ({
+      name: descriptor.name,
+      description: descriptor.description,
+      ...(descriptor.input === undefined ? {} : {
+        input: {
+          hint: descriptor.input.hint,
+          ...(descriptor.input.attachments === true ? { attachments: true } : {}),
+        },
+      }),
+    }))
+  }
+
+  /** 以成员身份执行一条宿主斜杠命令；signal 来自 RPC 请求的连接生命周期。 */
+  async executeMemberCommand(
+    teamId: string,
+    slotId: string,
+    line: string,
+    signal: AbortSignal,
+  ): Promise<CommandExecutionView> {
+    const team = this.service.getTeam(teamId)
+    const member = team.members[slotId]
+    if (member === undefined) throw new AgentTeamError('MEMBER_NOT_FOUND', `Unknown member '${slotId}'`)
+    const owned = this.requireOwned(member.sessionId)
+    const execution = await this.ctx.commands.execute(owned.handle.agent, line, [], signal)
+    if (execution === undefined) {
+      throw new AgentTeamError('INVALID_REQUEST', `未知的斜杠命令：${line}`)
+    }
+    return { commandId: execution.commandId, result: execution.result }
+  }
+
+  /** /team-compact：队长发起，逐个压缩全队成员上下文；busy 成员跳过不中断。 */
+  async compactAllMembers(teamId: string, slotId: string): Promise<CommandCompactAllView> {
+    const team = this.service.getTeam(teamId)
+    assertCompactCaller(team, slotId)
+    const members = Object.values(team.members)
+    const signal = new AbortController().signal
+    return compactTeamMembers(members, async member => {
+      const owned = this.owned.get(member.sessionId)
+      if (owned === undefined) return { ok: false, reason: '成员未在线' }
+      const execution = await this.ctx.commands.execute(owned.handle.agent, '/compact', [], signal)
+      if (execution === undefined) return { ok: false, reason: '命令未解析' }
+      return execution.result.kind === 'success'
+        ? { ok: true }
+        : { ok: false, reason: execution.result.text }
+    })
   }
 
   setMemberPermissionPreset(
@@ -1023,6 +1112,51 @@ function mapMembers(
   map: (member: TeamMemberSlot) => TeamMemberSlot,
 ): TeamAggregate['members'] {
   return Object.fromEntries(Object.entries(team.members).map(([id, member]) => [id, map(member)]))
+}
+
+/** /team-compact 仅队长可发起；slotId 必须等于团队 leaderSlotId。 */
+export function assertCompactCaller(
+  team: Pick<TeamAggregate, 'leaderSlotId' | 'name'>,
+  slotId: string,
+): void {
+  if (slotId !== team.leaderSlotId) {
+    throw new AgentTeamError(
+      'INVALID_REQUEST',
+      `「/team-compact」仅队长（Leader）可执行，团队 '${team.name}' 的 Leader 是 '${team.leaderSlotId}'`,
+    )
+  }
+}
+
+/** 单个成员的压缩执行结果。 */
+export interface CompactMemberOutcome {
+  ok: boolean
+  reason?: string
+}
+
+/**
+ * 逐个压缩全队成员：单个成员失败/忙碌不中断整体，跳过并记录原因。
+ * executeOne 的异常同样折叠为 skipped（防御宿主命令抛错）。
+ */
+export async function compactTeamMembers(
+  members: readonly TeamMemberSlot[],
+  executeOne: (member: TeamMemberSlot) => Promise<CompactMemberOutcome>,
+): Promise<CommandCompactAllView> {
+  const compacted: CommandCompactAllView['compacted'] = []
+  const skipped: CommandCompactAllView['skipped'] = []
+  for (const member of members) {
+    let outcome: CompactMemberOutcome
+    try {
+      outcome = await executeOne(member)
+    } catch (error) {
+      outcome = { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+    if (outcome.ok) {
+      compacted.push({ slotId: member.id, displayName: member.displayName })
+    } else {
+      skipped.push({ slotId: member.id, displayName: member.displayName, reason: outcome.reason ?? '未知原因' })
+    }
+  }
+  return { compacted, skipped }
 }
 
 function withReasoningEffort(

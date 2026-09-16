@@ -77,6 +77,41 @@ export function matchingUserSkills<T extends ComposerSkillSource>(
       || left.name.localeCompare(right.name))
 }
 
+/** 工作台私有批量指令：压缩全体成员上下文（仅队长）。不注册进宿主命令表。 */
+export const TEAM_COMPACT_COMMAND = 'team-compact'
+
+export interface ComposerCommandSource {
+  name: string
+  description: string
+}
+
+/** 整行匹配 `/<name> ...` 的斜杠命令行（name 语法与宿主一致）。 */
+export interface ParsedSlashLine {
+  name: string
+  args: string
+}
+
+export function parseSlashLine(line: string): ParsedSlashLine | undefined {
+  const match = /^\/([a-z][a-z0-9._-]*)(?=$|[\t\n\r ])/u.exec(line)
+  if (match === null) return undefined
+  const name = match[1]
+  if (name === undefined) return undefined
+  return { name, args: line.slice(match[0].length) }
+}
+
+/** 命令候选过滤：前缀命中优先，其余按名称排序（与 Skill 候选同规则）。 */
+export function matchingCommands<T extends ComposerCommandSource>(
+  commands: readonly T[],
+  rawQuery: string,
+): T[] {
+  const query = rawQuery.toLocaleLowerCase()
+  return commands
+    .filter(command => command.name.toLocaleLowerCase().includes(query))
+    .sort((left, right) => Number(!left.name.toLocaleLowerCase().startsWith(query))
+      - Number(!right.name.toLocaleLowerCase().startsWith(query))
+      || left.name.localeCompare(right.name))
+}
+
 export function scrollTopForActiveOption(geometry: OptionScrollGeometry): number {
   if (geometry.optionTop < geometry.viewportTop) {
     return Math.max(0, geometry.scrollTop - (geometry.viewportTop - geometry.optionTop))

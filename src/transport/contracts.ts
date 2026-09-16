@@ -55,6 +55,9 @@ export const AGENT_TEAM_METHODS = [
   'team.workspace.search',
   'team.workspace.changes',
   'team.workspace.diff',
+  'team.command.list',
+  'team.command.execute',
+  'team.command.compactAll',
   'team.dissolve',
 ] as const
 
@@ -293,6 +296,32 @@ export interface WorkspaceUploadView {
   bytes: number
 }
 
+/** 宿主命令描述（commands.list 的投影子集）。 */
+export interface CommandDescriptorView {
+  name: string
+  description: string
+  input?: { hint: string; attachments?: boolean }
+}
+
+/** 一次命令执行的结算结果（commands.execute 的投影子集）。 */
+export interface CommandExecutionView {
+  commandId: string
+  result: { kind: 'success'; text?: string } | { kind: 'error'; text: string }
+}
+
+/** /team-compact 全队压缩汇总。 */
+export interface CommandCompactAllView {
+  compacted: Array<{ slotId: string; displayName: string }>
+  skipped: Array<{ slotId: string; displayName: string; reason: string }>
+}
+
+/** transport 层调用运行时命令能力的结构化桥（由 TeamRuntime 满足）。 */
+export interface AgentTeamCommandBridge {
+  listMemberCommands(teamId: string, slotId: string): Promise<CommandDescriptorView[]>
+  executeMemberCommand(teamId: string, slotId: string, line: string, signal: AbortSignal): Promise<CommandExecutionView>
+  compactAllMembers(teamId: string, slotId: string): Promise<CommandCompactAllView>
+}
+
 export interface AgentTeamRequestMap {
   'catalog.get': { payload: undefined; result: CatalogView }
   'catalog.model.get': {
@@ -388,6 +417,12 @@ export interface AgentTeamRequestMap {
     }
     result: WorkspaceGitDiffView
   }
+  'team.command.list': { payload: { teamId: string; slotId: string }; result: CommandDescriptorView[] }
+  'team.command.execute': {
+    payload: { teamId: string; slotId: string; line: string }
+    result: CommandExecutionView
+  }
+  'team.command.compactAll': { payload: { teamId: string; slotId: string }; result: CommandCompactAllView }
   'team.dissolve': { payload: { teamId: string; confirmation: string }; result: null }
 }
 

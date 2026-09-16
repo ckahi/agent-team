@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   composerTriggerAt,
+  matchingCommands,
   matchingUserSkills,
+  parseSlashLine,
   replaceComposerTrigger,
   scrollTopForActiveOption,
+  TEAM_COMPACT_COMMAND,
 } from '../src/client/composer-triggers.js'
 
 describe('composer triggers', () => {
@@ -69,5 +72,36 @@ describe('composer triggers', () => {
       optionBottom: 180,
       scrollTop: 80,
     })).toBe(80)
+  })
+})
+
+describe('slash command helpers', () => {
+  it('parses full-line slash commands with the host name grammar', () => {
+    expect(parseSlashLine('/compact')).toEqual({ name: 'compact', args: '' })
+    expect(parseSlashLine('/compact  keep going')).toEqual({ name: 'compact', args: '  keep going' })
+    expect(parseSlashLine('/team-compact')).toEqual({ name: 'team-compact', args: '' })
+    expect(parseSlashLine('compact')).toBeUndefined()
+    expect(parseSlashLine('/1bad')).toBeUndefined()
+    expect(parseSlashLine('/compact extra /nested')).toEqual({ name: 'compact', args: ' extra /nested' })
+  })
+
+  it('filters command candidates prefix-first like skill candidates', () => {
+    const commands = [
+      { name: 'plan', description: 'Plan mode' },
+      { name: 'compact', description: 'Compact history' },
+      { name: 'permission', description: 'Permissions' },
+    ]
+    expect(matchingCommands(commands, '')).toHaveLength(3)
+    expect(matchingCommands(commands, 'co')).toEqual([
+      { name: 'compact', description: 'Compact history' },
+    ])
+    expect(matchingCommands(commands, 'an')).toEqual([
+      { name: 'plan', description: 'Plan mode' },
+    ])
+    expect(matchingCommands(commands, 'zzz')).toEqual([])
+  })
+
+  it('exports the private team-compact command name', () => {
+    expect(TEAM_COMPACT_COMMAND).toBe('team-compact')
   })
 })
