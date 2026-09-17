@@ -13,6 +13,7 @@ import {
   updateAssistantInputSchema,
 } from '../domain/schemas.js'
 import {
+  isTeamBusy,
   memberTemplateDrift,
   rebuildMemberSnapshot,
   snapshotAssistant,
@@ -39,6 +40,7 @@ import type {
   AssistantBuilderDraftView,
   InteractionResponseInput,
   MemberConversationView,
+  TeamSnapshotsRefreshView,
   TeamWorkbenchView,
   WorkspaceEntryView,
   WorkspaceGitStatusView,
@@ -653,6 +655,80 @@ export class AgentTeamService extends Service {
 
   async refreshMemberSnapshots(teamId: string): Promise<TeamAggregate> {
     const team = requireTeam(this.store, teamId)
+    if (this.refreshedMembers(team).refreshedCount === 0) return team
+    let refreshedCount = 0
+    const next = await this.store.updateTeam(teamId, current => {
+      const result = this.refreshedMembers(current)
+      refreshedCount = result.refreshedCount
+      if (result.refreshedCount === 0) return current
+      return {
+        ...current,
+        members: result.members,
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      }
+    })
+    if (refreshedCount > 0) {
+      await this.activity(
+        'team.snapshots_refreshed',
+        teamId,
+        next.revision,
+        `Refreshed ${refreshedCount} member snapshot(s) from current assistant templates`,
+      )
+      this.publish('team', teamId, next.revision, 'team.snapshots_refreshed')
+    }
+    return next
+  }
+
+  async syncMemberPersonas(teamId: string): Promise<TeamSnapshotsRefreshView> {
+    const team = requireTeam(this.store, teamId)
+    if (team.state !== 'active') {
+      throw new AgentTeamError('TEAM_NOT_ACTIVE', `Cannot sync member personas while team is '${team.state}'`)
+    }
+    if (isTeamBusy(team)) {
+      throw new AgentTeamError(
+        'MEMBER_BUSY',
+        '有成员正在执行任务或等待审批，无法同步人设；请等待全员空闲后重试',
+        { slotIds: Object.values(team.members)
+          .filter(member => member.lastRuntimeState === 'running' || member.lastRuntimeState === 'waiting_approval')
+          .map(member => member.id) },
+      )
+    }
+    if (this.refreshedMembers(team).refreshedCount === 0) return { team, refreshedCount: 0 }
+    let refreshedCount = 0
+    const next = await this.store.updateTeam(teamId, current => {
+      if (isTeamBusy(current)) {
+        throw new AgentTeamError(
+          'MEMBER_BUSY',
+          '有成员正在执行任务或等待审批，无法同步人设；请等待全员空闲后重试',
+          { slotIds: Object.values(current.members)
+            .filter(member => member.lastRuntimeState === 'running' || member.lastRuntimeState === 'waiting_approval')
+            .map(member => member.id) },
+        )
+      }
+      const result = this.refreshedMembers(current)
+      refreshedCount = result.refreshedCount
+      if (result.refreshedCount === 0) return current
+      return {
+        ...current,
+        members: result.members,
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      }
+    })
+    if (refreshedCount > 0) {
+      await this.activity(
+        'team.snapshots_refreshed',
+        teamId,
+        next.revision,
+        `Refreshed ${refreshedCount} member snapshot(s) from current assistant templates`,
+      )
+      this.publish('team', teamId, next.revision, 'team.snapshots_refreshed')
+    }
+    return { team: next, refreshedCount }
+  }
+
+  private refreshedMembers(team: TeamAggregate): { members: Record<string, TeamMemberSlot>; refreshedCount: number } {
     const refreshable = Object.values(team.members).filter(member => member.desiredState !== 'removing')
     const missing = refreshable.filter(member => this.store.getAssistant(member.assistantId) === undefined)
     if (missing.length > 0) {
@@ -668,23 +744,15 @@ export class AgentTeamService extends Service {
         },
       )
     }
-    const staleIds = new Set(refreshable
-      .filter(member => memberTemplateDrift(member, this.store.getAssistant(member.assistantId)!))
-      .map(member => member.id))
-    if (staleIds.size === 0) return team
-    return this.updateRuntimeTeam(
-      teamId,
-      current => ({
-        ...current,
-        members: Object.fromEntries(Object.entries(current.members).map(([slotId, member]) => {
-          if (!staleIds.has(slotId)) return [slotId, member]
-          const assistant = this.store.getAssistant(member.assistantId)
-          return assistant === undefined ? [slotId, member] : [slotId, rebuildMemberSnapshot(member, assistant)]
-        })),
-      }),
-      'team.snapshots_refreshed',
-      `Refreshed ${staleIds.size} member snapshot(s) from current assistant templates`,
-    )
+    let refreshedCount = 0
+    const members = Object.fromEntries(Object.entries(team.members).map(([slotId, member]) => {
+      if (member.desiredState === 'removing') return [slotId, member]
+      const assistant = this.store.getAssistant(member.assistantId)
+      if (assistant === undefined || !memberTemplateDrift(member, assistant)) return [slotId, member]
+      refreshedCount += 1
+      return [slotId, rebuildMemberSnapshot(member, assistant)]
+    }))
+    return { members, refreshedCount }
   }
 
   async resetTeam(

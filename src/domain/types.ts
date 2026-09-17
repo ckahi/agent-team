@@ -68,6 +68,12 @@ export function rebuildMemberSnapshot(member: TeamMemberSlot, assistant: Assista
   }
 }
 
+export function isTeamBusy(team: TeamAggregate): boolean {
+  return Object.values(team.members).some(member => (
+    member.lastRuntimeState === 'running' || member.lastRuntimeState === 'waiting_approval'
+  )) || Object.values(team.tasks).some(task => task.status === 'running')
+}
+
 export function memberTemplateDrift(member: TeamMemberSlot, assistant: AssistantTemplate): boolean {
   const fresh = snapshotAssistant(assistant)
   const current = member.assistantSnapshot

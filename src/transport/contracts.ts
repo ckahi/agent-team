@@ -44,6 +44,7 @@ export const AGENT_TEAM_METHODS = [
   'team.removeMember',
   'team.changeLeader',
   'team.reset',
+  'team.snapshots.refresh',
   'team.message.list',
   'team.message.send',
   'team.workbench.get',
@@ -65,6 +66,11 @@ export type AgentTeamMethod = typeof AGENT_TEAM_METHODS[number]
 
 export type AssistantView = AssistantTemplate
 export type TeamView = TeamAggregate
+
+export interface TeamSnapshotsRefreshView {
+  team: TeamView
+  refreshedCount: number
+}
 
 export interface PageView<T> {
   items: T[]
@@ -374,6 +380,7 @@ export interface AgentTeamRequestMap {
   'team.removeMember': { payload: { teamId: string; slotId: string }; result: TeamView }
   'team.changeLeader': { payload: { teamId: string; successorSlotId: string }; result: TeamView }
   'team.reset': { payload: { teamId: string; confirmation: string }; result: TeamView }
+  'team.snapshots.refresh': { payload: { teamId: string }; result: TeamSnapshotsRefreshView }
   'team.message.list': { payload: { id: string }; result: PageView<TeamMessage> }
   'team.message.send': {
     payload: { teamId: string; content: string; targetSlotId?: string }

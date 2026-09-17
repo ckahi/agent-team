@@ -349,6 +349,10 @@ async function dispatch(
       const payload = z.object({ teamId: z.string().min(1), confirmation: z.string() }).strict().parse(request.payload)
       return service.resetTeam(payload.teamId, payload.confirmation, options)
     }
+    case 'team.snapshots.refresh': {
+      const payload = z.object({ teamId: z.string().min(1) }).strict().parse(request.payload)
+      return service.syncMemberPersonas(payload.teamId)
+    }
     case 'team.message.list': return service.listMessages(idPayload.parse(request.payload).id)
     case 'team.message.send': {
       const payload = z.object({

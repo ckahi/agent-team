@@ -30,6 +30,7 @@ import { AnimatedModal, Empty, Field } from '../shared.js'
 import { openTeam } from '../store.js'
 import { isRunForTeam, useCompactRun } from '../state/compact-progress.js'
 import { canRetryTeamStart, isTeamExecuting } from '../team-status.js'
+import { countDriftedMembers } from '../team-persona.js'
 import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
 import { WorkspacePanel } from '../workspace/WorkspacePanel.js'
@@ -863,6 +864,8 @@ function TeamCard({
   const [dissolveOpen, setDissolveOpen] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [memberToRemove, setMemberToRemove] = useState<{ slotId: string; displayName: string }>()
+  const [syncOpen, setSyncOpen] = useState(false)
+  const [syncNotice, setSyncNotice] = useState<{ kind: 'busy' | 'success' | 'error'; text: string }>()
   const [error, setError] = useState<string>()
   const members = sortMembersLeaderFirst(Object.values(team.members))
   const tasks = Object.values(team.tasks)
@@ -939,6 +942,22 @@ function TeamCard({
       await onChanged()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function syncPersonas(): Promise<void> {
+    setBusy(true)
+    try {
+      const result = await callAgentTeam('team.snapshots.refresh', { teamId: team.id })
+      setSyncOpen(false)
+      setSyncNotice(result.refreshedCount > 0
+        ? { kind: 'success', text: `已同步 ${result.refreshedCount} 名成员的人设配置。` }
+        : { kind: 'success', text: '人设已最新，无需同步。' })
+      await onChanged()
+    } catch (cause) {
+      setSyncNotice({ kind: 'error', text: cause instanceof Error ? cause.message : String(cause) })
     } finally {
       setBusy(false)
     }
@@ -1051,6 +1070,29 @@ function TeamCard({
           复制团队
         </Button>
       </div>
+      {team.state === 'active' && (
+        <div className={`${css.contextResetPanel} ${css.cloneTeamPanel ?? ''}`}>
+          <div className={css.contextResetCopy}>
+            <strong>同步人设</strong>
+            <span>将全部成员的人设覆盖为最新助手模板配置。直接覆盖，不可撤销；仅全员空闲时可执行。</span>
+          </div>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              setError(undefined)
+              if (executing) {
+                setSyncNotice({ kind: 'busy', text: '有成员正在执行任务或等待审批，请等待全员空闲后再同步人设。' })
+                return
+              }
+              setSyncNotice(undefined)
+              setSyncOpen(true)
+            }}
+          >
+            同步人设
+          </Button>
+        </div>
+      )}
       {tasks.length > 0 && (
         <div className={css.taskList}>
           <strong className={css.taskTitle}>任务板</strong>
@@ -1099,7 +1141,52 @@ function TeamCard({
         </button>
       </div>
         {error && !dissolveOpen && !resetOpen && memberToRemove === undefined && <div role="alert" className={css.inlineError}>{error}</div>}
+        {syncNotice && !syncOpen && (
+          <div
+            role={syncNotice.kind === 'error' ? 'alert' : 'status'}
+            className={syncNotice.kind === 'error' ? css.inlineError : css.badgeSuccess}
+          >
+            {syncNotice.text}
+          </div>
+        )}
       </article>
+      <AnimatedModal
+        open={syncOpen}
+        onClose={() => {
+          if (busy) return
+          setSyncOpen(false)
+        }}
+        title="同步人设"
+        closeLabel="关闭"
+        description="直接覆盖，不可撤销。"
+        footer={(
+          <>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => { setSyncOpen(false) }}
+            >
+              取消
+            </Button>
+            <button
+              type="button"
+              className={`${css.dangerButton} ${css.confirmDangerButton}`}
+              disabled={busy}
+              onClick={() => { void syncPersonas() }}
+            >
+              {busy ? '同步中…' : '确认同步'}
+            </button>
+          </>
+        )}
+      >
+        <div className={css.memberRemoveConfirm}>
+          <div className={css.memberRemoveIcon} aria-hidden="true">↻</div>
+          <div>
+            <strong>确定同步“{team.name}”的成员人设？</strong>
+            <p>预计将有 {countDriftedMembers(team, assistants)} 名成员人设会变化；同步会整体覆盖成员人设快照，直接覆盖，不可撤销。成员会话上下文与任务板保持不变。</p>
+          </div>
+        </div>
+      </AnimatedModal>
       <AddTeamMemberDialog
         open={addingMember}
         team={team}
