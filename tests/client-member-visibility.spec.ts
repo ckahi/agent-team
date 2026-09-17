@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   initialVisibleMemberSlots,
+  initializeWorkbenchNewTeamDefaults,
+  loadOnlyActivePreference,
   loadWorkbenchVisibleSlots,
+  markNewTeamWorkbenchDefaults,
   reconcileVisibleMemberSlots,
+  saveOnlyActivePreference,
   saveWorkbenchVisibleSlots,
   sortMembersLeaderFirst,
   toggleVisibleMemberSlot,
@@ -198,5 +202,155 @@ describe('workbench visible-slot persistence', () => {
     stubWindowLocalStorage()
     store.set('agent-team:workbench:visible-slots:team-1', 'not-json')
     expect(loadWorkbenchVisibleSlots('team-1', ['leader', 'm1'], 'leader')).toEqual(['leader'])
+  })
+})
+
+describe('new-team workbench defaults', () => {
+  const store = new Map<string, string>()
+
+  function stubWindowLocalStorage(): void {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+        removeItem: (key: string) => { store.delete(key) },
+      },
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    store.clear()
+  })
+
+  it('initializes a marked new team with every member visible and only-active enabled', () => {
+    stubWindowLocalStorage()
+    markNewTeamWorkbenchDefaults('team-new')
+    const result = initializeWorkbenchNewTeamDefaults('team-new', ['leader', 'm1', 'm2'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader', 'm1', 'm2'])
+    expect(result.onlyActive).toBe(true)
+    expect(store.get('agent-team:workbench:visible-slots:team-new')).toBe(JSON.stringify(['leader', 'm1', 'm2']))
+    expect(store.get('agent-team:workbench:only-active:team-new')).toBe('true')
+  })
+
+  it('consumes the new-team marker so the defaults are applied only once', () => {
+    stubWindowLocalStorage()
+    markNewTeamWorkbenchDefaults('team-new')
+    initializeWorkbenchNewTeamDefaults('team-new', ['leader', 'm1'], 'leader')
+    saveOnlyActivePreference('team-new', false)
+    const second = initializeWorkbenchNewTeamDefaults('team-new', ['leader', 'm1'], 'leader')
+    expect(second.onlyActive).toBe(false)
+    expect(second.visibleSlots).toEqual(['leader', 'm1'])
+  })
+
+  it('keeps legacy leader-only defaults for a team without the new-team marker', () => {
+    stubWindowLocalStorage()
+    const result = initializeWorkbenchNewTeamDefaults('team-old', ['leader', 'm1', 'm2'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader'])
+    expect(result.onlyActive).toBe(false)
+    expect(store.has('agent-team:workbench:visible-slots:team-old')).toBe(false)
+    expect(store.has('agent-team:workbench:only-active:team-old')).toBe(false)
+  })
+
+  it('never resets a marked new team whose preferences were already customized', () => {
+    stubWindowLocalStorage()
+    markNewTeamWorkbenchDefaults('team-new')
+    saveWorkbenchVisibleSlots('team-new', ['leader'])
+    const result = initializeWorkbenchNewTeamDefaults('team-new', ['leader', 'm1'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader'])
+    expect(result.onlyActive).toBe(true)
+  })
+
+  it('keeps the default view effective when start fails and a retry succeeds (P-6)', () => {
+    stubWindowLocalStorage()
+    // 建队流程：createDraft 成功即打标记（P-6 修法），team.start 抛错
+    markNewTeamWorkbenchDefaults('team-retry')
+    // start 失败 → retryStart 成功后首次打开工作台：标记仍在，默认视图生效
+    const result = initializeWorkbenchNewTeamDefaults('team-retry', ['leader', 'm1', 'm2'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader', 'm1', 'm2'])
+    expect(result.onlyActive).toBe(true)
+    // 持久化已落盘，后续重开（标记已消费）仍保持
+    const reopened = initializeWorkbenchNewTeamDefaults('team-retry', ['leader', 'm1', 'm2'], 'leader')
+    expect(reopened.visibleSlots).toEqual(['leader', 'm1', 'm2'])
+    expect(reopened.onlyActive).toBe(true)
+  })
+
+  it('keeps the default view effective for a cloned orphan draft whose start failed (P-7)', () => {
+    stubWindowLocalStorage()
+    // 克隆流程：team.clone 成功即打标记（P-7 修法），team.start 抛错 → 孤儿草稿经 SSE 重拉出现在团队列表
+    markNewTeamWorkbenchDefaults('team-clone-orphan')
+    // 用户后续启动该草稿成功后首次打开工作台：标记仍在，默认视图生效
+    const result = initializeWorkbenchNewTeamDefaults('team-clone-orphan', ['leader', 'm1'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader', 'm1'])
+    expect(result.onlyActive).toBe(true)
+    // 持久化已落盘，后续重开（标记已消费）仍保持
+    const reopened = initializeWorkbenchNewTeamDefaults('team-clone-orphan', ['leader', 'm1'], 'leader')
+    expect(reopened.visibleSlots).toEqual(['leader', 'm1'])
+    expect(reopened.onlyActive).toBe(true)
+  })
+
+  it('degrades safely when localStorage is unavailable', () => {
+    markNewTeamWorkbenchDefaults('team-new')
+    const result = initializeWorkbenchNewTeamDefaults('team-new', ['leader', 'm1'], 'leader')
+    expect(result.visibleSlots).toEqual(['leader'])
+    expect(result.onlyActive).toBe(false)
+    expect(() => markNewTeamWorkbenchDefaults('team-2')).not.toThrow()
+  })
+})
+
+describe('per-team only-active preference', () => {
+  const store = new Map<string, string>()
+
+  function stubWindowLocalStorage(): void {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+        removeItem: (key: string) => { store.delete(key) },
+      },
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    store.clear()
+  })
+
+  it('prefers the per-team value over the legacy global preference', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:only-active', 'true')
+    expect(loadOnlyActivePreference('team-1')).toBe(true)
+    saveOnlyActivePreference('team-1', false)
+    expect(loadOnlyActivePreference('team-1')).toBe(false)
+    expect(loadOnlyActivePreference('team-2')).toBe(true)
+  })
+
+  it('falls back to the legacy global preference for existing teams', () => {
+    stubWindowLocalStorage()
+    store.set('agent-team:workbench:only-active', 'true')
+    expect(loadOnlyActivePreference('team-existing')).toBe(true)
+  })
+
+  it('defaults to false when no preference has ever been stored', () => {
+    stubWindowLocalStorage()
+    expect(loadOnlyActivePreference('team-1')).toBe(false)
+  })
+
+  it('writes the per-team key only and never mutates the legacy global key', () => {
+    stubWindowLocalStorage()
+    saveOnlyActivePreference('team-1', true)
+    expect(store.get('agent-team:workbench:only-active:team-1')).toBe('true')
+    expect(store.has('agent-team:workbench:only-active')).toBe(false)
+  })
+
+  it('ignores storage write failures when saving the preference', () => {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: () => null,
+        setItem: () => { throw new Error('quota exceeded') },
+        removeItem: () => {},
+      },
+    })
+    expect(() => saveOnlyActivePreference('team-1', true)).not.toThrow()
   })
 })

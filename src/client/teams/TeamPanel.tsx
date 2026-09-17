@@ -20,8 +20,11 @@ import css from '../AgentTeam.module.css'
 import { CrownIcon } from '../icons/CrownIcon.js'
 import { memberStatusLabel, TASK_STATE_LABELS, teamStartErrorHint } from '../labels.js'
 import {
+  initializeWorkbenchNewTeamDefaults,
   loadWorkbenchVisibleSlots,
+  markNewTeamWorkbenchDefaults,
   reconcileVisibleMemberSlots,
+  saveOnlyActivePreference,
   saveWorkbenchVisibleSlots,
   sortMembersLeaderFirst,
   toggleVisibleMemberSlot,
@@ -41,27 +44,6 @@ const ACTIVE_CONVERSATION_STATUSES: ReadonlySet<string> = new Set([
   'error',
   'starting',
 ])
-
-const ONLY_ACTIVE_PREFERENCE_STORAGE_KEY = 'agent-team:workbench:only-active'
-
-function loadOnlyActivePreference(): boolean {
-  try {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(ONLY_ACTIVE_PREFERENCE_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
-
-/** 持久化「只看活跃」偏好；存储失败（如隐私模式配额受限）静默忽略。 */
-function saveOnlyActivePreference(value: boolean): void {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(ONLY_ACTIVE_PREFERENCE_STORAGE_KEY, value ? 'true' : 'false')
-  } catch {
-    // 忽略存储写入失败（隐私模式 / 配额限制），偏好退化为会话内状态
-  }
-}
 
 function isConversationActive(status: string | undefined): boolean {
   return status !== undefined && ACTIVE_CONVERSATION_STATUSES.has(status)
@@ -221,8 +203,10 @@ function TeamWorkbench({
 }): JSX.Element {
   const members = useMemo(() => sortMembersLeaderFirst(Object.values(team.members)), [team.members])
   const memberIds = useMemo(() => members.map(member => member.id), [members])
+  // 新建团队默认值（G0）：首次打开时消费建队标记 → 全员展开 + 只看活跃默认勾选；存量团队行为不变
+  const [initialWorkbenchDefaults] = useState(() => initializeWorkbenchNewTeamDefaults(team.id, memberIds, team.leaderSlotId))
   const [snapshot, setSnapshot] = useState<TeamWorkbenchView>()
-  const [visibleSlots, setVisibleSlots] = useState(() => loadWorkbenchVisibleSlots(team.id, memberIds, team.leaderSlotId))
+  const [visibleSlots, setVisibleSlots] = useState(initialWorkbenchDefaults.visibleSlots)
   const [error, setError] = useState<string>()
   const [memberActionError, setMemberActionError] = useState<string>()
   const [memberActionBusy, setMemberActionBusy] = useState(false)
@@ -230,7 +214,7 @@ function TeamWorkbench({
   const [managementOpen, setManagementOpen] = useState(false)
   const [addMemberOpen, setAddMemberOpen] = useState(false)
   const [expandedSlotId, setExpandedSlotId] = useState<string>()
-  const [onlyActive, setOnlyActive] = useState(() => loadOnlyActivePreference())
+  const [onlyActive, setOnlyActive] = useState(initialWorkbenchDefaults.onlyActive)
   const [onlyActiveHint, setOnlyActiveHint] = useState<string>()
   const [workspaceVisible, setWorkspaceVisible] = useState(true)
   const [workspaceRefreshSignal, setWorkspaceRefreshSignal] = useState(0)
@@ -303,7 +287,7 @@ function TeamWorkbench({
 
   function changeOnlyActive(value: boolean): void {
     setOnlyActive(value)
-    saveOnlyActivePreference(value)
+    saveOnlyActivePreference(team.id, value)
     setOnlyActiveHint(undefined)
   }
 
@@ -748,6 +732,9 @@ function CloneTeamDialog({
         name,
         workspaceId,
       })
+      // G0/P-7：clone 成功即打标记（start 之前）——start 失败产生的孤儿草稿经 SSE 重拉出现在团队列表，
+      // 用户后续启动（retryStart）路径仍能拿到默认视图；孤儿标记无害依据与 createDraft 一致
+      markNewTeamWorkbenchDefaults(draft.id)
       await callAgentTeam('team.start', { id: draft.id }, draft.revision)
       setError(undefined)
       onClose()
@@ -1430,6 +1417,9 @@ function TeamForm({
           role: member.key === leaderKey ? 'leader' : 'member',
         })),
       })
+      // G0/P-6：createDraft 成功即打标记（start 之前）——team.start 失败后重试启动（retryStart）路径仍能拿到默认视图；
+      // 孤儿标记无害：一次性消费 + 默认值只填空白 + 从未打开的草稿无工作台
+      markNewTeamWorkbenchDefaults(draft.id)
       await callAgentTeam('team.start', { id: draft.id }, draft.revision)
       await onCreated(draft.id)
     } catch (cause) {
