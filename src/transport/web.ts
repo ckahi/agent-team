@@ -447,6 +447,20 @@ async function dispatch(
       }).strict().parse(request.payload)
       return service.getWorkspaceDiff(payload.teamId, payload.path, payload.scope, payload.layout, payload.theme)
     }
+    case 'team.workspace.read': {
+      const payload = z.object({
+        teamId: z.string().min(1),
+        path: z.string().min(1).max(4096),
+      }).strict().parse(request.payload)
+      return service.readWorkspaceFile(payload.teamId, payload.path)
+    }
+    case 'team.workspace.delete': {
+      const payload = z.object({
+        teamId: z.string().min(1),
+        path: z.string().min(1).max(4096),
+      }).strict().parse(request.payload)
+      return service.deleteWorkspaceFile(payload.teamId, payload.path)
+    }
     case 'team.command.list': {
       const payload = z.object({ teamId: z.string().min(1), slotId: z.string().min(1) }).strict().parse(request.payload)
       return commands.listMemberCommands(payload.teamId, payload.slotId)

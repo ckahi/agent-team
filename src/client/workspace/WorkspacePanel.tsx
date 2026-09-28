@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   IconBranchOutline16,
   IconChevronRightOutline14,
@@ -7,18 +8,28 @@ import {
   IconFolderOpen16,
   IconRefreshOutline16,
   IconRightUpOutline14,
+  MarkdownText,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   TeamView,
   WorkspaceEntryView,
+  WorkspaceFileDeleteView,
   WorkspaceGitChangeView,
   WorkspaceGitDiffView,
   WorkspaceGitStatusView,
 } from '../../transport/contracts.js'
 import { callAgentTeam, subscribeAgentTeamWorkspace } from '../api.js'
 import { AnimatedModal } from '../shared.js'
+import { deleteErrorFeedback, formatBytes, isMarkdownPath, readErrorText } from './file-ops-view.js'
 import css from './WorkspacePanel.module.css'
+
+// MarkdownText 的 labels 必须是模块级常量：每次 render 换 identity 会丢弃其内部渲染缓存。
+const MARKDOWN_LABELS: MarkdownLabels = {
+  code: { copyLabel: '复制', copiedLabel: '已复制' },
+  footnotes: '脚注',
+}
 
 export function WorkspacePanel({
   team,
@@ -38,8 +49,19 @@ export function WorkspacePanel({
   const [fileRefreshing, setFileRefreshing] = useState(false)
   const [gitRefreshing, setGitRefreshing] = useState(false)
   const [treeRefreshToken, setTreeRefreshToken] = useState(0)
+  const [previewTarget, setPreviewTarget] = useState<string>()
+  const [menuTarget, setMenuTarget] = useState<{ path: string; name: string; x: number; y: number }>()
+  const [deleteTarget, setDeleteTarget] = useState<string>()
+  const [deleteNotice, setDeleteNotice] = useState<{ tone: 'success' | 'error'; text: string }>()
   const fileLoadGeneration = useRef(0)
   const gitLoadGeneration = useRef(0)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  const showDeleteNotice = useCallback((tone: 'success' | 'error', text: string): void => {
+    if (noticeTimer.current !== undefined) clearTimeout(noticeTimer.current)
+    setDeleteNotice({ tone, text })
+    noticeTimer.current = setTimeout(() => { setDeleteNotice(undefined) }, 3_500)
+  }, [])
 
   const loadFiles = useCallback(async (): Promise<void> => {
     const generation = ++fileLoadGeneration.current
@@ -57,6 +79,14 @@ export function WorkspacePanel({
       if (generation === fileLoadGeneration.current) setFileRefreshing(false)
     }
   }, [team.id])
+
+  const handleDeleteSettled = useCallback((view: WorkspaceFileDeleteView): void => {
+    setDeleteTarget(undefined)
+    // AC-10/01c §5-9：成功与"已不存在"都反馈并刷新；差异仅在文案与色调。
+    if (view.deleted) showDeleteNotice('success', `已删除 ${view.path}`)
+    else showDeleteNotice('error', '删除失败：文件已不存在，可能已被删除。列表已刷新。')
+    void loadFiles()
+  }, [loadFiles, showDeleteNotice])
 
   const loadChanges = useCallback(async (): Promise<void> => {
     const generation = ++gitLoadGeneration.current
@@ -157,12 +187,22 @@ export function WorkspacePanel({
                   entry={entry}
                   depth={0}
                   refreshToken={treeRefreshToken}
+                  onOpenPreview={setPreviewTarget}
+                  onOpenMenu={(entry, x, y) => { setMenuTarget({ path: entry.path, name: entry.name, x, y }) }}
                 />
               ))}
               {entries.length === 0 && !fileError && (
                 <span className={css.fileEmpty}>{fileRefreshing ? '正在读取目录…' : '目录为空'}</span>
               )}
               {fileError && <span className={css.fileError}>{fileError}</span>}
+              {deleteNotice && (
+                <span
+                  role="status"
+                  className={`${css.workspaceNotice} ${deleteNotice.tone === 'success' ? css.workspaceNoticeSuccess! : css.workspaceNoticeError!}`}
+                >
+                  {deleteNotice.text}
+                </span>
+              )}
             </div>
           ) : (
             <WorkspaceChanges
@@ -178,6 +218,27 @@ export function WorkspacePanel({
         teamId={team.id}
         target={diffTarget}
         onClose={() => { setDiffTarget(undefined) }}
+      />
+      <WorkspacePreviewDialog
+        teamId={team.id}
+        path={previewTarget}
+        onClose={() => { setPreviewTarget(undefined) }}
+      />
+      {menuTarget && (
+        <WorkspaceRowMenu
+          target={menuTarget}
+          onClose={() => { setMenuTarget(undefined) }}
+          onDelete={() => {
+            setDeleteTarget(menuTarget.path)
+            setMenuTarget(undefined)
+          }}
+        />
+      )}
+      <WorkspaceDeleteDialog
+        teamId={team.id}
+        path={deleteTarget}
+        onClose={() => { setDeleteTarget(undefined) }}
+        onSettled={handleDeleteSettled}
       />
     </>
   )
@@ -421,11 +482,15 @@ function WorkspaceTreeRow({
   entry,
   depth,
   refreshToken,
+  onOpenPreview,
+  onOpenMenu,
 }: {
   teamId: string
   entry: WorkspaceEntryView
   depth: number
   refreshToken: number
+  onOpenPreview: (path: string) => void
+  onOpenMenu: (entry: WorkspaceEntryView, x: number, y: number) => void
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [children, setChildren] = useState<WorkspaceEntryView[]>()
@@ -438,13 +503,28 @@ function WorkspaceTreeRow({
     return () => { active = false }
   }, [entry.kind, entry.path, open, refreshToken, teamId])
 
-  function toggle(): void {
+  function handleRowClick(): void {
+    // P0-1/AC-5：目录行维持展开/折叠；文件与 symlink 打开只读预览。
     if (entry.kind === 'directory') setOpen(current => !current)
+    else onOpenPreview(entry.path)
+  }
+
+  function handleContextMenu(event: ReactMouseEvent): void {
+    // P0-3：目录行不弹菜单（结构性拦截，目录不可删）。
+    if (entry.kind === 'directory') return
+    event.preventDefault()
+    onOpenMenu(entry, event.clientX, event.clientY)
   }
 
   return (
     <div>
-      <button type="button" className={css.fileRow} style={{ paddingLeft: 8 + depth * 14 }} onClick={toggle}>
+      <button
+        type="button"
+        className={css.fileRow}
+        style={{ paddingLeft: 8 + depth * 14 }}
+        onClick={handleRowClick}
+        onContextMenu={handleContextMenu}
+      >
         <span className={`${css.fileDisclosure} ${open ? css.fileDisclosureOpen : ''}`}>
           {entry.kind === 'directory'
             ? <IconChevronRightOutline14 size={12} />
@@ -466,9 +546,251 @@ function WorkspaceTreeRow({
           entry={child}
           depth={depth + 1}
           refreshToken={refreshToken}
+          onOpenPreview={onOpenPreview}
+          onOpenMenu={onOpenMenu}
         />
       ))}
     </div>
+  )
+}
+
+type PreviewState =
+  | { stage: 'loading' }
+  | { stage: 'text'; content: string }
+  | { stage: 'markdown'; view: 'render' | 'source'; content: string }
+  | { stage: 'oversize'; bytes: number }
+  | { stage: 'binary' }
+  | { stage: 'error'; message: string; retryable: boolean }
+
+function WorkspacePreviewDialog({
+  teamId,
+  path,
+  onClose,
+}: {
+  teamId: string
+  path: string | undefined
+  onClose: () => void
+}): JSX.Element {
+  const [state, setState] = useState<PreviewState>({ stage: 'loading' })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    if (path === undefined) return
+    let active = true
+    setState({ stage: 'loading' })
+    void callAgentTeam('team.workspace.read', { teamId, path }).then(view => {
+      if (!active) return
+      if (view.oversize) {
+        setState({ stage: 'oversize', bytes: view.bytes })
+      } else if (view.kind === 'binary') {
+        setState({ stage: 'binary' })
+      } else if (isMarkdownPath(path)) {
+        setState({ stage: 'markdown', view: 'render', content: view.content ?? '' })
+      } else {
+        setState({ stage: 'text', content: view.content ?? '' })
+      }
+    }).catch(cause => {
+      if (!active) return
+      const invalid = (cause as { code?: string })?.code === 'INVALID_REQUEST'
+      // "文件已不存在"类内容失效无重试必要（01c §6-5）；其余失败可重试。
+      setState({ stage: 'error', message: readErrorText(cause), retryable: !invalid })
+    })
+    return () => { active = false }
+  }, [attempt, path, teamId])
+
+  const previewingMarkdown = state.stage === 'markdown'
+  return (
+    <AnimatedModal
+      open={path !== undefined}
+      onClose={onClose}
+      title={path ?? '文件预览'}
+      className={css.workspaceDiffDialog ?? ''}
+      headless
+    >
+      <div className={css.workspaceDiffShell}>
+        <header className={css.workspaceDiffHeader}>
+          <div className={css.workspaceDiffHeading}>
+            <div className={css.workspaceDiffTitleRow}>
+              <h2>{path ?? '文件预览'}</h2>
+              <span>只读预览</span>
+            </div>
+          </div>
+          <div className={css.workspaceDiffHeaderActions}>
+            {previewingMarkdown && state.stage === 'markdown' && (
+              <div className={css.workspaceDiffLayout} role="group" aria-label="预览视图">
+                <button
+                  type="button"
+                  className={state.view === 'render' ? css.workspaceDiffLayoutActive : ''}
+                  onClick={() => { setState({ ...state, view: 'render' }) }}
+                >渲染</button>
+                <button
+                  type="button"
+                  className={state.view === 'source' ? css.workspaceDiffLayoutActive : ''}
+                  onClick={() => { setState({ ...state, view: 'source' }) }}
+                >源码</button>
+              </div>
+            )}
+            <button type="button" className={css.workspaceDiffClose} aria-label="关闭预览" onClick={onClose}>
+              <IconCloseOutline16 size={16} />
+            </button>
+          </div>
+        </header>
+        <div className={css.workspaceDiffBody}>
+          {state.stage === 'loading' && <div className={css.workspaceDiffState}>正在读取文件…</div>}
+          {state.stage === 'error' && (
+            <div className={css.workspacePreviewErrorState}>
+              <div role="alert" className={css.workspaceDiffError}>{state.message}</div>
+              {state.retryable && (
+                <button type="button" className={css.workspacePreviewRetry} onClick={() => { setAttempt(current => current + 1) }}>
+                  重试
+                </button>
+              )}
+            </div>
+          )}
+          {state.stage === 'binary' && (
+            <div className={css.workspaceDiffState}>该文件为二进制/非文本文件，不支持预览。</div>
+          )}
+          {state.stage === 'oversize' && (
+            <div className={`${css.workspaceDiffState} ${css.workspacePreviewWarning!}`}>
+              文件过大（{formatBytes(state.bytes)}），超过预览上限 1 MB。请用系统编辑器打开该文件。
+            </div>
+          )}
+          {state.stage === 'text' && <pre className={css.workspacePreviewText}>{state.content === '' ? '（空文件）' : state.content}</pre>}
+          {state.stage === 'markdown' && state.view === 'render' && (
+            <div className={css.workspacePreviewMarkdown}>
+              {state.content === '' ? '（空文件）' : <MarkdownText text={state.content} labels={MARKDOWN_LABELS} />}
+            </div>
+          )}
+          {state.stage === 'markdown' && state.view === 'source' && (
+            <pre className={css.workspacePreviewText}>{state.content === '' ? '（空文件）' : state.content}</pre>
+          )}
+        </div>
+      </div>
+    </AnimatedModal>
+  )
+}
+
+function WorkspaceRowMenu({
+  target,
+  onClose,
+  onDelete,
+}: {
+  target: { path: string; name: string; x: number; y: number }
+  onClose: () => void
+  onDelete: () => void
+}): JSX.Element {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState({ left: target.x, top: target.y })
+  // P-QA-3：fixed 定位按实际尺寸做视口钳位，右/下边缘不溢出，删除项始终可点。
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    if (menu === null) return
+    const { offsetWidth, offsetHeight } = menu
+    const margin = 8
+    setPosition({
+      left: Math.max(margin, Math.min(target.x, window.innerWidth - offsetWidth - margin)),
+      top: Math.max(margin, Math.min(target.y, window.innerHeight - offsetHeight - margin)),
+    })
+  }, [target.x, target.y])
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent): void {
+      if (menuRef.current !== null && !menuRef.current.contains(event.target as Node)) onClose()
+    }
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
+  return (
+    <div ref={menuRef} className={css.workspaceRowMenu} style={{ left: position.left, top: position.top }} role="menu" aria-label={`文件操作：${target.path}`}>
+      <button type="button" role="menuitem" className={css.workspaceRowMenuItem} onClick={onDelete}>
+        删除
+      </button>
+    </div>
+  )
+}
+
+function WorkspaceDeleteDialog({
+  teamId,
+  path,
+  onClose,
+  onSettled,
+}: {
+  teamId: string
+  path: string | undefined
+  onClose: () => void
+  onSettled: (view: WorkspaceFileDeleteView) => void
+}): JSX.Element {
+  const [stage, setStage] = useState<'confirm' | 'deleting' | 'error'>('confirm')
+  const [feedback, setFeedback] = useState<{ text: string; retryable: boolean }>()
+
+  // 每次打开重置为待确认态。
+  useEffect(() => {
+    if (path !== undefined) {
+      setStage('confirm')
+      setFeedback(undefined)
+    }
+  }, [path])
+
+  async function confirmDelete(): Promise<void> {
+    if (path === undefined || stage === 'deleting') return
+    // AC-18：删除请求不可取消，deleting 态禁用全部关闭路径（确认/取消/Esc 均禁用或被 onClose 门禁拦截）。
+    setStage('deleting')
+    setFeedback(undefined)
+    try {
+      const view = await callAgentTeam('team.workspace.delete', { teamId, path })
+      onSettled(view)
+    } catch (cause) {
+      setFeedback(deleteErrorFeedback(cause))
+      setStage('error')
+    }
+  }
+
+  // 01c §2.4-4 定稿：失败弹窗不关，错误显示在弹窗内；校验类错误不给重试。
+  const requestInFlight = stage === 'deleting'
+  return (
+    <AnimatedModal
+      open={path !== undefined}
+      onClose={() => { if (!requestInFlight) onClose() }}
+      title="删除确认"
+      className={css.workspaceDeleteDialog ?? ''}
+      headless
+    >
+      <div className={css.workspaceDeleteShell}>
+        <p className={css.workspaceDeleteQuestion}>确定要删除以下文件吗？</p>
+        <p className={css.workspaceDeletePath}>{path}</p>
+        <p className={css.workspaceDeleteWarning} role="note">⚠ 删除后不可恢复，此操作没有回收站</p>
+        {stage === 'error' && feedback && (
+          <div role="alert" className={css.workspaceDeleteError}>{feedback.text}</div>
+        )}
+        <div className={css.workspaceDeleteActions}>
+          <button
+            type="button"
+            className={css.workspaceDeleteCancel}
+            disabled={requestInFlight}
+            onClick={onClose}
+          >取消</button>
+          {stage === 'error' && feedback?.retryable && (
+            <button type="button" className={css.workspaceDeleteCancel} onClick={() => { void confirmDelete() }}>
+              重试
+            </button>
+          )}
+          <button
+            type="button"
+            className={css.workspaceDeleteDanger}
+            disabled={requestInFlight}
+            onClick={() => { void confirmDelete() }}
+          >
+            {requestInFlight ? '删除中…' : '删除'}
+          </button>
+        </div>
+      </div>
+    </AnimatedModal>
   )
 }
 

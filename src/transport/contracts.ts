@@ -56,6 +56,8 @@ export const AGENT_TEAM_METHODS = [
   'team.workspace.search',
   'team.workspace.changes',
   'team.workspace.diff',
+  'team.workspace.read',
+  'team.workspace.delete',
   'team.command.list',
   'team.command.execute',
   'team.command.compactAll',
@@ -302,6 +304,20 @@ export interface WorkspaceUploadView {
   bytes: number
 }
 
+export interface WorkspaceFileContentView {
+  path: string
+  bytes: number
+  kind: 'text' | 'binary'
+  oversize: boolean
+  content?: string
+}
+
+export interface WorkspaceFileDeleteView {
+  path: string
+  deleted: boolean
+  alreadyAbsent: boolean
+}
+
 /** 宿主命令描述（commands.list 的投影子集）。 */
 export interface CommandDescriptorView {
   name: string
@@ -423,6 +439,14 @@ export interface AgentTeamRequestMap {
       theme: 'light' | 'dark'
     }
     result: WorkspaceGitDiffView
+  }
+  'team.workspace.read': {
+    payload: { teamId: string; path: string }
+    result: WorkspaceFileContentView
+  }
+  'team.workspace.delete': {
+    payload: { teamId: string; path: string }
+    result: WorkspaceFileDeleteView
   }
   'team.command.list': { payload: { teamId: string; slotId: string }; result: CommandDescriptorView[] }
   'team.command.execute': {

@@ -507,6 +507,180 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
+/* ── 文件操作（预览 / 行菜单 / 删除确认 / 轻提示） ── */
+
+.workspaceNotice {
+  display: block;
+  margin: 6px 8px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.workspaceNoticeSuccess {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.workspaceNoticeError {
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.workspacePreviewWarning {
+  color: var(--dsw-alias-state-warning-primary);
+}
+
+.workspacePreviewText {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+}
+
+.workspacePreviewMarkdown {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 21px;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+}
+
+.workspacePreviewErrorState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.workspacePreviewErrorState .workspaceDiffError {
+  flex: none;
+  display: block;
+  padding: 0;
+}
+
+.workspacePreviewRetry,
+.workspaceRowMenuItem,
+.workspaceDeleteCancel,
+.workspaceDeleteDanger {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  padding: 5px 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.workspacePreviewRetry:hover,
+.workspaceRowMenuItem:hover,
+.workspaceDeleteCancel:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.workspacePreviewRetry:disabled,
+.workspaceDeleteCancel:disabled,
+.workspaceDeleteDanger:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.workspaceRowMenu {
+  position: fixed;
+  z-index: 40;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-alias-shadow-l1);
+}
+
+.workspaceRowMenuItem {
+  text-align: left;
+  border: 0;
+  background: transparent;
+}
+
+.workspaceDeleteShell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.workspaceDeleteQuestion {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workspaceDeletePath {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: break-word;
+}
+
+.workspaceDeleteWarning {
+  margin: 0;
+  color: var(--dsw-alias-state-warning-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.workspaceDeleteError {
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.workspaceDeleteActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.workspaceDeleteDanger {
+  border: 0;
+  background: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-bg-layer-1);
+}
+
 @media (max-width: 1440px) {
   .workspacePanel {
     width: 220px;
