@@ -39,7 +39,16 @@ flowchart TD
    New-Item -ItemType Directory -Force -Path dist
    npm pack --pack-destination dist
    ```
-3. profile 备份在位（升级前应已生成）：`C:\Users\Administrator\.dsh\profiles\desktop\package.json.bak-0.1.5`。缺失则先复制一份当前 `package.json` 再动手。
+3. profile 备份**已完成**（2026-10-08，升级前实测留档），全部位于 `C:\Users\Administrator\.dsh\profiles\desktop\`：
+
+   | 备份文件 | 内容 | 核验结果 |
+   |---|---|---|
+   | `package.json.bak-0.1.5` | profile 依赖 spec（agent-team@0.2.22 等 10 包） | 与现文件逐字节一致（1003 B） |
+   | `cordis.patch.yml.bak-0.1.5` | 用户 patch 层（当前为空数组 `[]`） | 已复制 |
+   | `plugin-list-0.1.5.bak.txt` | 升级前插件清单（agent-team **0.2.22**、web-all 0.3.23、mnemon 0.5.9 等 10 包） | 已生成 |
+   | `dsh-version-0.1.5.bak.txt` | 升级前宿主版本 `0.1.5-rc.1` | 已生成 |
+
+   回滚时：前两个文件原样复制回去 → `pnpm install` → 按 `plugin-list-0.1.5.bak.txt` 重装各插件（agent-team 装回 `dist/limuyang2-dsh-agent-team-0.2.22.tgz`）。
 
 ## 3. 安装步骤
 
