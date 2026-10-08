@@ -4,4 +4,5 @@ coverage/
 .DS_Store
 *.log
 dist/*.tgz
+docs/artifacts/
 
