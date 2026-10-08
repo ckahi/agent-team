@@ -639,7 +639,7 @@ describe('AgentTeamService', () => {
     expect(ensureMemberOnline).toHaveBeenCalledOnce()
     expect(leaderAgent.followup).toHaveBeenCalledOnce()
     expect(leaderAgent.followup.mock.calls[0]?.[0]).toMatchObject({
-      source: { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' },
+      source: { kind: 'agent-team', form: 'relay' },
       content: [{ type: 'text', text: expect.stringContaining(member.id) }],
     })
     expect(Object.keys(added.outbox)).toHaveLength(0)
@@ -1109,7 +1109,7 @@ describe('AgentTeamService', () => {
     expect(leaderAgent.followup).toHaveBeenCalledOnce()
     expect(leaderAgent.followup.mock.calls[0]?.[0]).toMatchObject({
       role: 'user',
-      source: { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' },
+      source: { kind: 'agent-team', form: 'relay' },
       content: [{ type: 'text', text: expect.stringContaining(member.id) }],
     })
     expect(Object.keys(removed.outbox)).toHaveLength(0)
@@ -1225,7 +1225,7 @@ function createHarness(workspacePath = '/tmp/agent-team-workspace'): {
   ctx.provide('agentPresets', {
     list: async () => [{ id: 'default', name: 'Default' }],
     resolve: async (id: string) => ({ id, name: id }),
-    standingKeyFor: async () => ({ kind: 'preset-scope' }),
+    acquireScope: async () => ({ key: { kind: 'preset-scope' }, [Symbol.asyncDispose]: async () => {} }),
   } as never)
   ctx.provide('tools', {
     get: (name: string) => name === 'skill' ? { name: 'skill' } : undefined,

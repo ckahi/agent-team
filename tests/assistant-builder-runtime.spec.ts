@@ -239,8 +239,7 @@ describe('AssistantBuilderRuntime', () => {
   it('requires a fresh, real user response after preparation', () => {
     const beforePreparation = userEvent(4, '确认创建')
     const pluginRelay = userEvent(6, '确认创建', {
-      kind: 'plugin',
-      plugin: 'dsh-agent-team',
+      kind: 'agent-team',
       form: 'relay',
     })
     const naturalConfirmation = userEvent(7, '没问题，就这样创建吧')
@@ -261,7 +260,7 @@ function userEvent(seq: number, text: string, source: unknown = { kind: 'user' }
       content: [{ type: 'text', text }],
       source,
     },
-  } as SessionEvent
+  } as unknown as SessionEvent
 }
 
 function fakeModelPreferences() {

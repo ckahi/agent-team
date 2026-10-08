@@ -1,10 +1,10 @@
 import type { FormEvent } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import {
-  IconCloseOutline16,
-  IconPaperclipOutline16,
-  IconSendOutline16,
-  IconStopFill16,
+  IconCloseOutlineRegular,
+  IconPaperclipOutlineRegular,
+  IconSendOutlineRegular,
+  IconStopFillRegular,
   MarkdownText,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -604,7 +604,7 @@ export function ConversationColumn({
                 onDoubleClick={event => { event.stopPropagation() }}
                 onClick={() => { onExpandedChange(false) }}
               >
-                <IconCloseOutline16 size={16} />
+                <IconCloseOutlineRegular size={16} />
               </button>
             </Tooltip>
           )}
@@ -783,7 +783,7 @@ export function ConversationColumn({
                 fileInputRef.current?.click()
               }}
             >
-              <IconPaperclipOutline16 size={16} />
+              <IconPaperclipOutlineRegular size={16} />
             </button>
             <input
               ref={fileInputRef}
@@ -843,7 +843,7 @@ export function ConversationColumn({
                   aria-label={stopping ? '停止中' : '停止生成'}
                   onClick={() => { void stop() }}
                 >
-                  <IconStopFill16 size={16} />
+                  <IconStopFillRegular size={16} />
                 </button>
               </Tooltip>
             )}
@@ -854,7 +854,7 @@ export function ConversationColumn({
                 disabled={!canChat || sending || uploadingFiles || !content.trim()}
                 aria-label={sending ? '发送中' : '发送消息'}
               >
-                <IconSendOutline16 size={16} />
+                <IconSendOutlineRegular size={16} />
               </button>
             </Tooltip>
           </div>

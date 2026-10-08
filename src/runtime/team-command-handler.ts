@@ -185,8 +185,7 @@ export class TeamCommandHandler {
     const relay = createUserMessage({
       content: [{ type: 'text', text: `${teamMessageHeader(sender.displayName, sender.id)}\n${content}` }],
       source: {
-        kind: 'plugin',
-        plugin: 'dsh-agent-team',
+        kind: 'agent-team',
         form: 'relay',
       },
     })

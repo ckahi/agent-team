@@ -2,10 +2,10 @@ import type { FormEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
-  IconArchiveOutline20,
-  IconPlusOutline16,
-  IconSendOutline16,
-  IconStopFill16,
+  IconArchiveOutlineRegular,
+  IconPlusOutlineRegular,
+  IconSendOutlineRegular,
+  IconStopFillRegular,
   MarkdownText,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -413,7 +413,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
           disabled={loading || running || draft !== undefined}
           onClick={() => { void createDraft() }}
         >
-          <IconPlusOutline16 size={14} />
+          <IconPlusOutlineRegular size={14} />
           <span>新对话</span>
         </button>
         <div className={css.assistantBuilderHistoryList}>
@@ -442,7 +442,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
                     setArchiveCandidate(item)
                   }}
                 >
-                  <IconArchiveOutline20 size={14} />
+                  <IconArchiveOutlineRegular size={14} />
                 </button>
               </Tooltip>
             </div>
@@ -545,7 +545,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
             {running && (
               <Tooltip label="停止生成" side="top" delayMs={400}>
                 <button type="button" className={conversationCss.composerIconButton} onClick={() => { void stop() }} aria-label="停止生成">
-                  <IconStopFill16 size={16} />
+                  <IconStopFillRegular size={16} />
                 </button>
               </Tooltip>
             )}
@@ -556,7 +556,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
                 disabled={loading || running || sending || !selectedProvider || !selectedModel || content.trim().length === 0}
                 aria-label={sending ? '发送中' : '发送消息'}
               >
-                <IconSendOutline16 size={16} />
+                <IconSendOutlineRegular size={16} />
               </button>
             </Tooltip>
           </div>
@@ -602,7 +602,7 @@ function AssistantBuilderConversation({ catalog }: { catalog: CatalogView | unde
         {archiveCandidate !== undefined && (
           <div className={css.assistantBuilderArchiveConfirm}>
             <div className={css.assistantBuilderArchiveIcon} aria-hidden="true">
-              <IconArchiveOutline20 size={20} />
+              <IconArchiveOutlineRegular size={20} />
             </div>
             <div>
               <strong>{archiveCandidate.title}</strong>

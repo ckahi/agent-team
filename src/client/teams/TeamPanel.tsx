@@ -2,10 +2,10 @@ import type { FormEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
-  IconChevronLeftOutline14,
-  IconCloseOutline16,
-  IconFolderOpenOutline16,
-  IconPlusOutline16,
+  IconChevronLeftOutlineRegular,
+  IconCloseOutlineRegular,
+  IconFolderOpenOutlineRegular,
+  IconPlusOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
@@ -387,7 +387,7 @@ function TeamWorkbench({
                       setMemberToRemove(member)
                     }}
                   >
-                    <IconCloseOutline16 size={12} />
+                    <IconCloseOutlineRegular size={12} />
                   </button>
                 </span>
               )}
@@ -410,7 +410,7 @@ function TeamWorkbench({
               className={css.manageButton}
               onClick={() => { setWorkspaceVisible(true) }}
             >
-              <IconChevronLeftOutline14 size={14} />
+              <IconChevronLeftOutlineRegular size={14} />
               Workspace
             </Button>
           )}
@@ -422,7 +422,7 @@ function TeamWorkbench({
               setAddMemberOpen(true)
             }}
           >
-            <IconPlusOutline16 size={14} />
+            <IconPlusOutlineRegular size={14} />
             添加助手
           </Button>
           <Button variant="ghost" size="sm" className={css.manageButton} onClick={() => { setManagementOpen(value => !value) }}>
@@ -632,7 +632,7 @@ function AddTeamMemberDialog({
                 <span>{assistant.provider} / {assistant.model}</span>
               </span>
               <span className={css.addMemberOptionAction}>
-                {addingAssistantId === assistant.id ? '添加中…' : <IconPlusOutline16 size={14} />}
+                {addingAssistantId === assistant.id ? '添加中…' : <IconPlusOutlineRegular size={14} />}
               </span>
             </button>
           ))}
@@ -791,7 +791,7 @@ function CloneTeamDialog({
                 onClick={() => { void chooseWorkspace() }}
                 className={css.workspacePickButton}
               >
-                <IconFolderOpenOutline16 size={16} />
+                <IconFolderOpenOutlineRegular size={16} />
                 {pickingWorkspace ? '选择中…' : '选择文件夹'}
               </Button>
             </div>
@@ -996,7 +996,7 @@ function TeamCard({
               disabled={busy}
               onClick={() => { setAddingMember(true) }}
             >
-              <IconPlusOutline16 size={14} />
+              <IconPlusOutlineRegular size={14} />
               添加助手
             </button>
           </span>
@@ -1465,7 +1465,7 @@ function TeamForm({
                   onClick={() => { addAssistant(assistant) }}
                   aria-label={`添加 ${assistant.name}`}
                 >
-                  <IconPlusOutline16 size={16} />
+                  <IconPlusOutlineRegular size={16} />
                 </button>
               </div>
             ))}
@@ -1510,7 +1510,7 @@ function TeamForm({
                         onClick={() => { removeMember(member.key) }}
                         aria-label={`移除 ${assistant?.name ?? '助手'}`}
                       >
-                        <IconCloseOutline16 size={14} />
+                        <IconCloseOutlineRegular size={14} />
                       </button>
                     </div>
                   )
@@ -1533,7 +1533,7 @@ function TeamForm({
                   onClick={() => { void chooseWorkspace() }}
                   className={css.workspacePickButton}
                 >
-                  <IconFolderOpenOutline16 size={16} />
+                  <IconFolderOpenOutlineRegular size={16} />
                   {pickingWorkspace ? '选择中…' : '选择文件夹'}
                 </Button>
               </div>

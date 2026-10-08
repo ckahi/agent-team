@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import {
-  Button, IconAgentPresetOutline16, IconCloseOutline16, IconPlusOutline16, Tooltip,
+  Button, IconAgentPresetOutlineRegular, IconCloseOutlineRegular, IconPlusOutlineRegular, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SettingsSectionOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { AssistantPanel } from './assistants/AssistantPanel.js'
@@ -290,7 +290,7 @@ function FloatingTeamLauncher({ hasExecutingTeam }: { hasExecutingTeam: boolean 
         aria-label={hasExecutingTeam ? '打开团队工作台，有团队正在执行任务' : '打开团队工作台'}
       >
         <span className={css.floatingTeamLauncherIcon}>
-          <IconAgentPresetOutline16 size={18} />
+          <IconAgentPresetOutlineRegular size={18} />
           {hasExecutingTeam && <span className={css.floatingTeamLauncherState} aria-hidden="true" />}
         </span>
         <span className={css.floatingTeamLauncherLabel}>团队</span>
@@ -390,12 +390,12 @@ export function AgentTeamOverlay({ pickWorkspace }: { pickWorkspace: () => Promi
             aria-label="查看全部团队"
             aria-current={selectedTeamId === undefined ? 'page' : undefined}
           >
-            <IconAgentPresetOutline16 size={18} />
+            <IconAgentPresetOutlineRegular size={18} />
             <span>团队</span>
           </button>
           <Tooltip label="组建团队" delayMs={400}>
             <button type="button" className={css.teamNavigatorAdd} onClick={openTeamCreator} aria-label="组建团队">
-              <IconPlusOutline16 size={16} />
+              <IconPlusOutlineRegular size={16} />
             </button>
           </Tooltip>
         </div>
@@ -440,7 +440,7 @@ export function AgentTeamOverlay({ pickWorkspace }: { pickWorkspace: () => Promi
             <p className={css.subtitle} title={headerSubtitle}>{headerSubtitle}</p>
           </div>
           <button type="button" className={css.iconButton} onClick={closeAgentTeam} aria-label="关闭工作台">
-            <IconCloseOutline16 size={16} />
+            <IconCloseOutlineRegular size={16} />
           </button>
         </header>
         {error && <div role="alert" className={css.error}>{error}</div>}

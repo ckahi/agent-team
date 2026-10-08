@@ -156,18 +156,21 @@ export function projectConversation(
         break
       }
       case 'tool/result': {
-        const callId = String(event.data.message.content[0].toolCallId)
+        // 0.1.7：ToolResultMessage 改 tool-role，toolCallId/isError 提升到
+        // message 顶层，content 为原始结果 block（宿主 B-2 重构）。
+        const callId = String(event.data.message.toolCallId)
         const index = tools.get(callId)
-        const result = textOf(event.data.message.content[0].content)
+        const result = textOf(event.data.message.content)
         const error = event.data.error === undefined
           ? undefined
           : `${event.data.error.name}: ${event.data.error.code}`
+        const isError = event.data.message.isError === true
         if (index !== undefined) {
           const node = nodes[index]
           if (node?.kind === 'tool') nodes[index] = {
             ...node,
             seq: event.seq,
-            status: event.data.message.content[0].isError === true || error !== undefined ? 'error' : 'success',
+            status: isError || error !== undefined ? 'error' : 'success',
             ...(result.length === 0 ? {} : { result }),
             ...(error === undefined ? {} : { error }),
           }
@@ -180,7 +183,7 @@ export function projectConversation(
             callId,
             name: 'tool',
             arguments: '',
-            status: event.data.message.content[0].isError === true || error !== undefined ? 'error' : 'success',
+            status: isError || error !== undefined ? 'error' : 'success',
             ...(result.length === 0 ? {} : { result }),
             ...(error === undefined ? {} : { error }),
           })
@@ -293,24 +296,25 @@ function teamMessageNode(
 
 function isVisibleUserSource(source: MessageSource): boolean {
   if (source.kind === 'user') return true
-  if (source.kind !== 'plugin') return false
-  return source.plugin === 'dsh-agent-team' && source.form === 'relay'
+  // 0.1.7：共享 'plugin' kind 已删除，插件自有 kind 为 'agent-team'（B-1）。
+  return source.kind === 'agent-team' && source.form === 'relay'
 }
 
 /**
- * compaction 检查点消息（source: {kind:'plugin', plugin:'compact', compactionId}）。
- * 摘要内容不按普通用户消息渲染，折叠为一条简洁的「已压缩 N 条历史」notice。
+ * compaction 检查点消息（0.1.7 source: {kind:'compact-checkpoint', compactionId}，
+ * 该 kind 由宿主 @deepseek-ai/dsh-compaction 包声明，插件未依赖该包，故按
+ * 结构判定）。摘要内容不按普通用户消息渲染，折叠为一条「已压缩 N 条历史」notice。
  */
 function isCompactionCheckpointSource(
   source: MessageSource,
-): source is MessageSource & { plugin: 'compact'; compactionId: string } {
-  return source.kind === 'plugin' && (source as { plugin?: unknown }).plugin === 'compact'
+): source is MessageSource & { compactionId: string } {
+  if ((source as { kind?: unknown }).kind !== 'compact-checkpoint') return false
+  return typeof (source as { compactionId?: unknown }).compactionId === 'string'
 }
 
 function textOf(blocks: readonly ContentBlock[]): string {
   return blocks.flatMap(block => {
     if (block.type === 'text') return [block.text]
-    if (block.type === 'tool-result') return [textOf(block.content)]
     if (block.type === 'image') return ['[图片]']
     return []
   }).filter(Boolean).join('\n')

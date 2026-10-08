@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
-  IconBranchOutline16,
-  IconChevronRightOutline14,
-  IconCloseOutline16,
-  IconFolderClose16,
-  IconFolderOpen16,
-  IconRefreshOutline16,
-  IconRightUpOutline14,
+  IconBranchOutlineRegular,
+  IconChevronRightOutlineRegular,
+  IconCloseOutlineRegular,
+  IconFolderCloseRegular,
+  IconFolderOpenRegular,
+  IconRefreshOutlineRegular,
+  IconRightUpOutlineRegular,
   MarkdownText,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -141,7 +141,7 @@ export function WorkspacePanel({
                 aria-label={refreshing ? '正在刷新 Workspace' : '刷新 Workspace'}
                 onClick={() => { void load() }}
               >
-                <IconRefreshOutline16 size={16} />
+                <IconRefreshOutlineRegular size={16} />
               </button>
             </Tooltip>
             <Tooltip label="收起 Workspace" side="bottom" delayMs={400}>
@@ -151,7 +151,7 @@ export function WorkspacePanel({
                 aria-label="收起 Workspace"
                 onClick={onCollapse}
               >
-                <IconChevronRightOutline14 size={14} />
+                <IconChevronRightOutlineRegular size={14} />
               </button>
             </Tooltip>
           </div>
@@ -265,7 +265,7 @@ function WorkspaceChanges({
   if (status.state === 'not-repository') {
     return (
       <div className={css.workspaceGitEmpty}>
-        <span><IconBranchOutline16 size={20} /></span>
+        <span><IconBranchOutlineRegular size={20} /></span>
         <strong>当前 Workspace 不是 Git 仓库</strong>
         <p>仍可在“文件”中浏览工作区内容。</p>
       </div>
@@ -274,7 +274,7 @@ function WorkspaceChanges({
   if (status.changes.length === 0) {
     return (
       <div className={css.workspaceGitEmpty}>
-        <span><IconBranchOutline16 size={20} /></span>
+        <span><IconBranchOutlineRegular size={20} /></span>
         <strong>没有未提交变更</strong>
         <p>Workspace 当前处于干净状态。</p>
       </div>
@@ -405,7 +405,7 @@ function WorkspaceDiffDialog({
               >分栏</button>
             </div>
             <button type="button" className={css.workspaceDiffClose} aria-label="关闭变更预览" onClick={onClose}>
-              <IconCloseOutline16 size={16} />
+              <IconCloseOutlineRegular size={16} />
             </button>
           </div>
         </header>
@@ -527,14 +527,14 @@ function WorkspaceTreeRow({
       >
         <span className={`${css.fileDisclosure} ${open ? css.fileDisclosureOpen : ''}`}>
           {entry.kind === 'directory'
-            ? <IconChevronRightOutline14 size={12} />
+            ? <IconChevronRightOutlineRegular size={12} />
             : entry.kind === 'symlink'
-              ? <IconRightUpOutline14 size={12} />
+              ? <IconRightUpOutlineRegular size={12} />
               : null}
         </span>
         <span className={css.fileKindIcon}>
           {entry.kind === 'directory'
-            ? open ? <IconFolderOpen16 size={16} /> : <IconFolderClose16 size={16} />
+            ? open ? <IconFolderOpenRegular size={16} /> : <IconFolderCloseRegular size={16} />
             : <FileOutlineIcon size={16} />}
         </span>
         <span>{entry.name}</span>
@@ -631,7 +631,7 @@ function WorkspacePreviewDialog({
               </div>
             )}
             <button type="button" className={css.workspaceDiffClose} aria-label="关闭预览" onClick={onClose}>
-              <IconCloseOutline16 size={16} />
+              <IconCloseOutlineRegular size={16} />
             </button>
           </div>
         </header>

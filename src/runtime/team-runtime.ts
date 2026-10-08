@@ -937,9 +937,14 @@ export class TeamRuntime {
             { memberId: member.id },
           )
         }
-        const presetScope = await this.ctx.agentPresets.standingKeyFor(
+        // 0.1.7：standingKeyFor 已由 acquireScope（revision lease + key）取代；
+        // 成员 agent 已在上方 mount 加入该 revision，提取 key 后即释放 lease，
+        // key 在 revision 存续期（成员 agent 生命周期）内保持可读。
+        const presetLease = await this.ctx.agentPresets.acquireScope(
           member.assistantSnapshot.agentPresetId,
         )
+        const presetScope = presetLease.key
+        await presetLease[Symbol.asyncDispose]()
         const skillSelectionProvider = `agent-team-selection-${member.id}`
         await registerScopedSkillProvider(agentCtx, () => ({
           name: skillSelectionProvider,

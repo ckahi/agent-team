@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { freezeMessage, MessageId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentTeamError } from '../domain/errors.js'
 import type { TeamAggregate, TeamMessage } from '../domain/types.js'
@@ -106,13 +107,24 @@ export function taskMessageType(status: TaskStatus): 'progress' | 'result' | 'qu
   return 'progress'
 }
 
+/**
+ * 宿主 0.1.7 起 `MessageSourceMap` 为各 producer 声明自有 kind 的合并扩展点
+ * （共享 catch-all `plugin` kind 已删除）。插件以 `agent-team` 作为自有
+ * source kind，`form: 'relay'` 表示「另一位 agent 发给本会话的消息」。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'agent-team': { kind: 'agent-team' } & ContextFormed
+  }
+}
+
 export function messageFromRecord(team: TeamAggregate, record: TeamMessage): UserMessage {
   if (record.sender.kind === 'system') {
     return freezeMessage({
       id: MessageId(record.id),
       role: 'user',
       content: [{ type: 'text', text: `[Team event]\n${record.content}` }],
-      source: { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' },
+      source: { kind: 'agent-team', form: 'relay' },
     })
   }
   const sender = record.sender.kind === 'member' ? team.members[record.sender.id] : undefined
@@ -128,7 +140,7 @@ export function messageFromRecord(team: TeamAggregate, record: TeamMessage): Use
     role: 'user',
     content: [{ type: 'text', text }],
     source: record.sender.kind === 'member'
-      ? { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' }
+      ? { kind: 'agent-team', form: 'relay' }
       : { kind: 'user' },
   })
 }

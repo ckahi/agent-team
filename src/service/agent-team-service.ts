@@ -244,20 +244,27 @@ export class AgentTeamService extends Service {
   async skillCatalog(agentPresetId: string): Promise<SkillCatalogSnapshot> {
     try {
       await this.ctx.agentPresets.resolve(agentPresetId)
-      const scope = await this.ctx.agentPresets.standingKeyFor(agentPresetId)
-      if (this.ctx.tools.get('skill', scope) === undefined) {
-        return { agentPresetId, skills: [] }
-      }
-      const skills = await this.ctx.skills.list({ scope })
-      return {
-        agentPresetId,
-        skills: skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill)).map(skill => ({
-          name: skill.name,
-          description: skill.description,
-          source: skill.source,
-          modelInvocable: isModelInvocable(skill),
-          userInvocable: isUserInvocable(skill),
-        })),
+      // 0.1.7：standingKeyFor 已由 acquireScope（revision lease + key）取代；
+      // lease 只覆盖本次读，读毕即释放，key 在 revision 存续期内保持可读。
+      const lease = await this.ctx.agentPresets.acquireScope(agentPresetId)
+      try {
+        const scope = lease.key
+        if (this.ctx.tools.get('skill', scope) === undefined) {
+          return { agentPresetId, skills: [] }
+        }
+        const skills = await this.ctx.skills.list({ scope })
+        return {
+          agentPresetId,
+          skills: skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill)).map(skill => ({
+            name: skill.name,
+            description: skill.description,
+            source: skill.source,
+            modelInvocable: isModelInvocable(skill),
+            userInvocable: isUserInvocable(skill),
+          })),
+        }
+      } finally {
+        await lease[Symbol.asyncDispose]()
       }
     } catch (error) {
       if (error instanceof AgentTeamError) throw error
@@ -273,21 +280,26 @@ export class AgentTeamService extends Service {
   async mcpCatalog(agentPresetId: string): Promise<McpCatalogSnapshot> {
     try {
       await this.ctx.agentPresets.resolve(agentPresetId)
-      const scope = await this.ctx.agentPresets.standingKeyFor(agentPresetId)
-      const servers = new Map<string, Array<{ name: string; description: string }>>()
-      for (const tool of this.ctx.tools.schemas(scope)) {
-        const serverName = mcpServerFromToolName(tool.name)
-        if (serverName === undefined) continue
-        const entries = servers.get(serverName) ?? []
-        entries.push({ name: tool.name, description: tool.description })
-        servers.set(serverName, entries)
-      }
-      return {
-        agentPresetId,
-        servers: [...servers.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, tools]) => ({
-          name,
-          tools: tools.sort((left, right) => left.name.localeCompare(right.name)),
-        })),
+      const lease = await this.ctx.agentPresets.acquireScope(agentPresetId)
+      try {
+        const scope = lease.key
+        const servers = new Map<string, Array<{ name: string; description: string }>>()
+        for (const tool of this.ctx.tools.schemas(scope)) {
+          const serverName = mcpServerFromToolName(tool.name)
+          if (serverName === undefined) continue
+          const entries = servers.get(serverName) ?? []
+          entries.push({ name: tool.name, description: tool.description })
+          servers.set(serverName, entries)
+        }
+        return {
+          agentPresetId,
+          servers: [...servers.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, tools]) => ({
+            name,
+            tools: tools.sort((left, right) => left.name.localeCompare(right.name)),
+          })),
+        }
+      } finally {
+        await lease[Symbol.asyncDispose]()
       }
     } catch (error) {
       if (error instanceof AgentTeamError) throw error

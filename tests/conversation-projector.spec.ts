@@ -46,11 +46,9 @@ describe('projectConversation', () => {
         turn: 1,
         step: 1,
         message: {
-          id: 'tool-result-1', role: 'user', source: { kind: 'tool', callId: 'call-1' },
-          content: [{
-            type: 'tool-result', toolCallId: 'call-1', isError: false,
-            content: [{ type: 'text', text: 'file contents' }],
-          }],
+          id: 'tool-result-1', role: 'tool', source: { kind: 'tool', callId: 'call-1' },
+          toolCallId: 'call-1', isError: false,
+          content: [{ type: 'text', text: 'file contents' }],
         },
       }),
     ])
@@ -58,6 +56,25 @@ describe('projectConversation', () => {
     expect(projected.nodes).toEqual([
       expect.objectContaining({ kind: 'assistant', text: 'Final answer' }),
       expect.objectContaining({ kind: 'tool', name: 'read', status: 'success', result: 'file contents' }),
+    ])
+  })
+
+  it('marks a tool result as errored from the top-level isError flag (0.1.7 tool-role message)', () => {
+    const projected = projectConversation([
+      event(0, 'tool/call', { turn: 1, step: 1, callId: 'call-9', name: 'edit', arguments: '{}' }),
+      event(1, 'tool/result', {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'tool-result-9', role: 'tool', source: { kind: 'tool', callId: 'call-9' },
+          toolCallId: 'call-9', isError: true,
+          content: [{ type: 'text', text: 'boom' }],
+        },
+      }),
+    ])
+
+    expect(projected.nodes).toEqual([
+      expect.objectContaining({ kind: 'tool', callId: 'call-9', name: 'edit', status: 'error', result: 'boom' }),
     ])
   })
 
@@ -96,14 +113,14 @@ describe('projectConversation', () => {
       event(0, 'user/message', {
         id: 'context-snapshot', role: 'user',
         source: {
-          kind: 'plugin', plugin: 'dsh-runtime-context', form: 'snapshot',
+          kind: 'model-selection', form: 'snapshot',
           sections: [{ name: 'policy', text: 'Current runtime context' }],
         },
         content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes earlier snapshots.' }],
       }),
       event(1, 'user/message', {
         id: 'skills-catalog', role: 'user',
-        source: { kind: 'plugin', plugin: 'dsh-skills', form: 'catalog' },
+        source: { kind: 'model-selection', form: 'catalog' },
         content: [{ type: 'text', text: '<system-reminder><available_skills>secret catalog</available_skills></system-reminder>' }],
       }),
       event(2, 'user/message', {
@@ -112,12 +129,12 @@ describe('projectConversation', () => {
       }),
       event(3, 'user/message', {
         id: 'relay-1', role: 'user',
-        source: { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' },
+        source: { kind: 'agent-team', form: 'relay' },
         content: [{ type: 'text', text: 'Leader 分配的任务' }],
       }),
       event(4, 'user/message', {
         id: 'foreign-relay', role: 'user',
-        source: { kind: 'plugin', plugin: 'another-plugin', form: 'relay' },
+        source: { kind: 'model-selection', form: 'relay' },
         content: [{ type: 'text', text: '其他插件的内部转发' }],
       }),
     ])
@@ -134,7 +151,7 @@ describe('projectConversation', () => {
     const projected = projectConversation([
       event(0, 'user/message', {
         id: 'relay-1', role: 'user',
-        source: { kind: 'plugin', plugin: 'dsh-agent-team', form: 'relay' },
+        source: { kind: 'agent-team', form: 'relay' },
         content: [{ type: 'text', text: '[Team message from Coder]\nParser implemented.' }],
       }),
     ], 240, {
@@ -190,7 +207,7 @@ describe('projectConversation', () => {
       }),
       event(3, 'user/message', {
         id: 'compact-checkpoint', role: 'user',
-        source: { kind: 'plugin', plugin: 'compact', compactionId: 'cmp-1' },
+        source: { kind: 'compact-checkpoint', compactionId: 'cmp-1' },
         content: [{ type: 'text', text: 'summary text' }],
       }),
       event(4, 'user/message', {
@@ -211,7 +228,7 @@ describe('projectConversation', () => {
     const projected = projectConversation([
       event(0, 'user/message', {
         id: 'compact-checkpoint', role: 'user',
-        source: { kind: 'plugin', plugin: 'compact', compactionId: 'cmp-2' },
+        source: { kind: 'compact-checkpoint', compactionId: 'cmp-2' },
         content: [{ type: 'text', text: 'summary' }],
       }),
     ])
