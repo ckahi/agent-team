@@ -1,5 +1,8 @@
 import { AgentTeamError, isAgentTeamError } from '../../domain/errors.js'
 
+// 扩展名→语言映射的唯一定义在 domain/code-language.ts（服务端渲染器共用），此处转发保持既有导入路径。
+export { codeLanguageForPath } from '../../domain/code-language.js'
+
 /** 01c §2.2-3/4：markdown 按扩展名识别（渲染↔源码切换仅对 markdown 开放）。 */
 export function isMarkdownPath(path: string): boolean {
   const name = path.split('/').pop() ?? ''

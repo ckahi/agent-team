@@ -454,6 +454,14 @@ async function dispatch(
       }).strict().parse(request.payload)
       return service.readWorkspaceFile(payload.teamId, payload.path)
     }
+    case 'team.workspace.highlight': {
+      const payload = z.object({
+        teamId: z.string().min(1),
+        path: z.string().min(1).max(4096),
+        theme: z.enum(['light', 'dark']),
+      }).strict().parse(request.payload)
+      return service.highlightWorkspaceFile(payload.teamId, payload.path, payload.theme)
+    }
     case 'team.workspace.delete': {
       const payload = z.object({
         teamId: z.string().min(1),

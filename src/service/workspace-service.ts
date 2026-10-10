@@ -10,11 +10,13 @@ import type {
   WorkspaceEntryView,
   WorkspaceFileContentView,
   WorkspaceFileDeleteView,
+  WorkspaceFileHighlightView,
   WorkspaceGitDiffView,
   WorkspaceGitStatusView,
   WorkspaceUploadView,
 } from '../transport/contracts.js'
 import { renderWorkspaceGitDiff } from './workspace-diff-renderer.js'
+import { renderWorkspaceFileHighlight } from './workspace-highlight-renderer.js'
 import { readWorkspaceGitDiff, readWorkspaceGitStatus, WorkspaceTracker } from './workspace-tracker.js'
 
 const PREVIEW_MAX_BYTES = 1_048_576
@@ -99,6 +101,30 @@ export class WorkspaceService {
       oversize: false,
       content: new TextDecoder('utf-8').decode(handle),
     }
+  }
+
+  /** 预览语法高亮：门禁（存在性/目录/大小/二进制/语言支持）后走 @pierre/diffs SSR 渲染；不支持的形态返回空 HTML 供客户端回退纯文本。 */
+  async highlight(teamId: string, rawPath: string, theme: 'light' | 'dark'): Promise<WorkspaceFileHighlightView> {
+    const team = await this.requireWorkspace(teamId)
+    const { requested } = await this.resolveWithinWorkspace(team.workspacePath, rawPath)
+    const root = await realpath(team.workspacePath)
+    const relativePath = relative(root, requested).split(sep).join('/')
+    const info = await stat(requested).catch((error: NodeJS.ErrnoException) => {
+      throw new AgentTeamError('INVALID_REQUEST', `Workspace file '${relativePath}' does not exist`, undefined, { cause: error })
+    })
+    if (info.isDirectory()) {
+      throw new AgentTeamError('INVALID_REQUEST', `Workspace path '${relativePath}' is a directory`)
+    }
+    if (info.size > PREVIEW_MAX_BYTES) {
+      return { path: relativePath, theme, html: '' }
+    }
+    const handle = await readFile(requested)
+    if (handle.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
+      return { path: relativePath, theme, html: '' }
+    }
+    const content = new TextDecoder('utf-8').decode(handle)
+    const html = await renderWorkspaceFileHighlight(content, relativePath, theme, info.mtimeMs, info.size)
+    return { path: relativePath, theme, html }
   }
 
   async deleteFile(teamId: string, rawPath: string): Promise<WorkspaceFileDeleteView> {

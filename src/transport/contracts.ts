@@ -57,6 +57,7 @@ export const AGENT_TEAM_METHODS = [
   'team.workspace.changes',
   'team.workspace.diff',
   'team.workspace.read',
+  'team.workspace.highlight',
   'team.workspace.delete',
   'team.command.list',
   'team.command.execute',
@@ -318,6 +319,13 @@ export interface WorkspaceFileDeleteView {
   alreadyAbsent: boolean
 }
 
+/** 预览语法高亮渲染结果；html 为空表示该文件形态不支持高亮，客户端回退纯文本。 */
+export interface WorkspaceFileHighlightView {
+  path: string
+  theme: 'light' | 'dark'
+  html: string
+}
+
 /** 宿主命令描述（commands.list 的投影子集）。 */
 export interface CommandDescriptorView {
   name: string
@@ -443,6 +451,10 @@ export interface AgentTeamRequestMap {
   'team.workspace.read': {
     payload: { teamId: string; path: string }
     result: WorkspaceFileContentView
+  }
+  'team.workspace.highlight': {
+    payload: { teamId: string; path: string; theme: 'light' | 'dark' }
+    result: WorkspaceFileHighlightView
   }
   'team.workspace.delete': {
     payload: { teamId: string; path: string }

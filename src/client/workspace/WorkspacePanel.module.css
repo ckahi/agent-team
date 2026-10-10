@@ -1,4 +1,5 @@
 .workspacePanel {
+  position: relative;
   flex: none;
   width: 300px;
   min-height: 0;
@@ -7,6 +8,39 @@
   overflow: hidden;
   border-left: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
+}
+
+/* 拖拽把手：贴住左缘的可命中条，hover/拖拽中显示高亮线。窄屏（≤1440px）保持紧凑默认宽并隐藏把手。
+   B-2：aside 自身 overflow:hidden 会裁掉越出边界的部分，把手整体放在面板内缘（left:0）保证 7px 命中区完整。 */
+.workspaceResizeHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 10;
+  touch-action: none;
+}
+
+.workspaceResizeHandle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+}
+
+.workspaceResizeHandle:hover::after,
+.workspaceResizeHandle:focus-visible::after {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+body.workspace-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .workspaceHeader {
@@ -684,6 +718,10 @@
 @media (max-width: 1440px) {
   .workspacePanel {
     width: 220px;
+  }
+
+  .workspaceResizeHandle {
+    display: none;
   }
 }
 

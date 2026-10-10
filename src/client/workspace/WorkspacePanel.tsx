@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import {
   IconBranchOutlineRegular,
   IconChevronRightOutlineRegular,
@@ -22,13 +22,139 @@ import type {
 } from '../../transport/contracts.js'
 import { callAgentTeam, subscribeAgentTeamWorkspace } from '../api.js'
 import { AnimatedModal } from '../shared.js'
-import { deleteErrorFeedback, formatBytes, isMarkdownPath, readErrorText } from './file-ops-view.js'
+import { codeLanguageForPath, deleteErrorFeedback, formatBytes, isMarkdownPath, readErrorText } from './file-ops-view.js'
 import css from './WorkspacePanel.module.css'
 
 // MarkdownText 的 labels 必须是模块级常量：每次 render 换 identity 会丢弃其内部渲染缓存。
 const MARKDOWN_LABELS: MarkdownLabels = {
   code: { copyLabel: '复制', copiedLabel: '已复制' },
   footnotes: '脚注',
+}
+
+// 侧栏拖拽宽度：localStorage 记忆（受限 WebView 降级为仅当前会话生效）；0 表示未定制（走 CSS 默认宽）。
+const WORKSPACE_WIDTH_STORAGE_KEY = 'agent-team.workspacePanelWidth'
+const WORKSPACE_WIDTH_MIN = 220
+const WORKSPACE_WIDTH_MAX = 560
+const WORKSPACE_WIDTH_KEYBOARD_STEP = 24
+
+function clampWorkspaceWidth(value: number): number {
+  // 视口上限随窗口收敛，防止小窗口下侧栏占满主内容区。
+  const viewportMax = Math.max(WORKSPACE_WIDTH_MIN, Math.min(WORKSPACE_WIDTH_MAX, window.innerWidth - 80))
+  return Math.min(viewportMax, Math.max(WORKSPACE_WIDTH_MIN, Math.round(value)))
+}
+
+function readStoredWorkspaceWidth(): number {
+  try {
+    const stored = window.localStorage.getItem(WORKSPACE_WIDTH_STORAGE_KEY)
+    if (stored === null) return 0
+    const value = Number(stored)
+    if (!Number.isFinite(value) || value < WORKSPACE_WIDTH_MIN) return 0
+    return clampWorkspaceWidth(value)
+  } catch {
+    return 0
+  }
+}
+
+function storeWorkspaceWidth(width: number): void {
+  try {
+    window.localStorage.setItem(WORKSPACE_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // Storage can be unavailable in restricted WebViews; dragging still works for the current session.
+  }
+}
+
+function useWorkspacePanelWidth(asideRef: RefObject<HTMLElement | null>): {
+  width: number
+  startResize: (event: React.PointerEvent<HTMLDivElement>) => void
+  resizeByKeyboard: (delta: number) => void
+} {
+  const [width, setWidth] = useState(readStoredWorkspaceWidth)
+
+  // B-1：拖拽中面板卸载（切换团队/收起）时 pointerup 不会到达，卸载时兜底移除 body 状态类，
+  // 避免全局 col-resize 光标 + 禁选中残留。
+  useEffect(() => () => { document.body.classList.remove('workspace-resizing') }, [])
+
+  // 与 CSS 媒体查询（≤1440px 紧凑默认宽）对齐：窄屏下不应用记忆宽度，避免内联 style 覆盖紧凑布局。
+  const [isWideViewport, setIsWideViewport] = useState(
+    () => window.matchMedia('(min-width: 1441px)').matches,
+  )
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1441px)')
+    const onChange = (event: MediaQueryListEvent): void => { setIsWideViewport(event.matches) }
+    media.addEventListener('change', onChange)
+    return () => { media.removeEventListener('change', onChange) }
+  }, [])
+
+  // 浏览器窗口变化时收敛已记忆宽度，避免小窗口被旧值撑爆。
+  useEffect(() => {
+    if (width === 0) return
+    const reclamp = (): void => { setWidth(current => (current === 0 ? 0 : clampWorkspaceWidth(current))) }
+    window.addEventListener('resize', reclamp)
+    return () => { window.removeEventListener('resize', reclamp) }
+  }, [width])
+
+  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault()
+    const aside = asideRef.current
+    if (aside === null) return
+    const startX = event.clientX
+    const startWidth = aside.getBoundingClientRect().width
+    const pointerId = event.pointerId
+    const handle = event.currentTarget
+    handle.setPointerCapture(pointerId)
+    document.body.classList.add('workspace-resizing')
+    const onMove = (moveEvent: PointerEvent): void => {
+      setWidth(clampWorkspaceWidth(startWidth + (startX - moveEvent.clientX)))
+    }
+    // B-1/B-3：统一收尾——卸下全部监听与 body 状态类，pointer capture 兜底释放。
+    const detach = (): void => {
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', onUp)
+      handle.removeEventListener('pointercancel', onCancel)
+      handle.removeEventListener('lostpointercapture', onLostCapture)
+      window.removeEventListener('keydown', onKeyDown)
+      document.body.classList.remove('workspace-resizing')
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId)
+    }
+    const onUp = (): void => {
+      detach()
+      setWidth(current => {
+        const clamped = clampWorkspaceWidth(current)
+        storeWorkspaceWidth(clamped)
+        return clamped
+      })
+    }
+    const onCancel = (): void => {
+      // pointercancel/lostpointercapture：恢复起始宽度，不落库。
+      detach()
+      setWidth(clampWorkspaceWidth(startWidth))
+    }
+    const onLostCapture = (): void => {
+      onCancel()
+    }
+    // B-3：Esc 显式取消拖拽，回弹起始宽度且不写 localStorage。
+    const onKeyDown = (keyEvent: KeyboardEvent): void => {
+      if (keyEvent.key === 'Escape') {
+        keyEvent.preventDefault()
+        onCancel()
+      }
+    }
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', onUp)
+    handle.addEventListener('pointercancel', onCancel)
+    handle.addEventListener('lostpointercapture', onLostCapture)
+    window.addEventListener('keydown', onKeyDown)
+  }, [asideRef])
+
+  const resizeByKeyboard = useCallback((delta: number): void => {
+    setWidth(current => {
+      const next = clampWorkspaceWidth((current === 0 ? 300 : current) + delta)
+      storeWorkspaceWidth(next)
+      return next
+    })
+  }, [])
+
+  return { width: isWideViewport ? width : 0, startResize, resizeByKeyboard }
 }
 
 export function WorkspacePanel({
@@ -56,6 +182,8 @@ export function WorkspacePanel({
   const fileLoadGeneration = useRef(0)
   const gitLoadGeneration = useRef(0)
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>()
+  const asideRef = useRef<HTMLElement>(null)
+  const { width: panelWidth, startResize, resizeByKeyboard } = useWorkspacePanelWidth(asideRef)
 
   const showDeleteNotice = useCallback((tone: 'success' | 'error', text: string): void => {
     if (noticeTimer.current !== undefined) clearTimeout(noticeTimer.current)
@@ -129,7 +257,28 @@ export function WorkspacePanel({
   const refreshing = fileRefreshing || gitRefreshing
   return (
     <>
-      <aside className={css.workspacePanel}>
+      <aside
+        ref={asideRef}
+        className={css.workspacePanel}
+        style={panelWidth > 0 ? { width: panelWidth } : undefined}
+      >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整 Workspace 侧栏宽度"
+          tabIndex={0}
+          className={css.workspaceResizeHandle}
+          onPointerDown={startResize}
+          onKeyDown={event => {
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault()
+              resizeByKeyboard(-WORKSPACE_WIDTH_KEYBOARD_STEP)
+            } else if (event.key === 'ArrowRight') {
+              event.preventDefault()
+              resizeByKeyboard(WORKSPACE_WIDTH_KEYBOARD_STEP)
+            }
+          }}
+        />
         <div className={css.workspaceHeader}>
           <div><strong>Workspace</strong><span>{team.workspacePath}</span></div>
           <div className={css.workspaceHeaderActions}>
@@ -556,7 +705,7 @@ function WorkspaceTreeRow({
 
 type PreviewState =
   | { stage: 'loading' }
-  | { stage: 'text'; content: string }
+  | { stage: 'text'; content: string; language?: string }
   | { stage: 'markdown'; view: 'render' | 'source'; content: string }
   | { stage: 'oversize'; bytes: number }
   | { stage: 'binary' }
@@ -587,7 +736,8 @@ function WorkspacePreviewDialog({
       } else if (isMarkdownPath(path)) {
         setState({ stage: 'markdown', view: 'render', content: view.content ?? '' })
       } else {
-        setState({ stage: 'text', content: view.content ?? '' })
+        const language = codeLanguageForPath(path)
+        setState({ stage: 'text', content: view.content ?? '', ...(language === undefined ? {} : { language }) })
       }
     }).catch(cause => {
       if (!active) return
@@ -599,6 +749,24 @@ function WorkspacePreviewDialog({
   }, [attempt, path, teamId])
 
   const previewingMarkdown = state.stage === 'markdown'
+  const themeType = useHarnessThemeType()
+  const [highlight, setHighlight] = useState<{ path: string; html: string }>()
+  // 高亮走服务端 team.workspace.highlight（@pierre/diffs SSR）；失败/不支持静默回退纯文本。
+  useEffect(() => {
+    if (state.stage !== 'text' || state.language === undefined || state.content === '' || path === undefined) {
+      setHighlight(undefined)
+      return
+    }
+    let active = true
+    void callAgentTeam('team.workspace.highlight', { teamId, path, theme: themeType }).then(view => {
+      if (!active) return
+      setHighlight(view.html === '' ? undefined : { path, html: view.html })
+    }).catch(() => {
+      if (active) setHighlight(undefined)
+    })
+    return () => { active = false }
+  }, [path, state, teamId, themeType])
+  const highlightHtml = highlight !== undefined && highlight.path === path ? highlight.html : undefined
   return (
     <AnimatedModal
       open={path !== undefined}
@@ -655,7 +823,14 @@ function WorkspacePreviewDialog({
               文件过大（{formatBytes(state.bytes)}），超过预览上限 1 MB。请用系统编辑器打开该文件。
             </div>
           )}
-          {state.stage === 'text' && <pre className={css.workspacePreviewText}>{state.content === '' ? '（空文件）' : state.content}</pre>}
+          {state.stage === 'text' && (state.content === '' ? (
+            <pre className={css.workspacePreviewText}>（空文件）</pre>
+          ) : highlightHtml === undefined ? (
+            <pre className={css.workspacePreviewText}>{state.content}</pre>
+          ) : (
+            // 服务端 @pierre/diffs SSR 输出：纯高亮 prerenderedHTML（含主题样式），无用户可控属性透传，沿用 diff 预览的 shadow-root 注入模式。
+            <WorkspaceDiffHtml html={highlightHtml} />
+          ))}
           {state.stage === 'markdown' && state.view === 'render' && (
             <div className={css.workspacePreviewMarkdown}>
               {state.content === '' ? '（空文件）' : <MarkdownText text={state.content} labels={MARKDOWN_LABELS} />}

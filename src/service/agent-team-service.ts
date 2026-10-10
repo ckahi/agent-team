@@ -46,6 +46,7 @@ import type {
   WorkspaceGitStatusView,
   WorkspaceFileContentView,
   WorkspaceFileDeleteView,
+  WorkspaceFileHighlightView,
   WorkspaceGitDiffView,
   WorkspaceUploadView,
 } from '../transport/contracts.js'
@@ -943,6 +944,14 @@ export class AgentTeamService extends Service {
 
   async readWorkspaceFile(teamId: string, path: string): Promise<WorkspaceFileContentView> {
     return this.workspace.read(teamId, path)
+  }
+
+  async highlightWorkspaceFile(
+    teamId: string,
+    path: string,
+    theme: 'light' | 'dark',
+  ): Promise<WorkspaceFileHighlightView> {
+    return this.workspace.highlight(teamId, path, theme)
   }
 
   async deleteWorkspaceFile(teamId: string, path: string): Promise<WorkspaceFileDeleteView> {

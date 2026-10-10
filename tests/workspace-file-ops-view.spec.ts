@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deleteErrorFeedback, isMarkdownPath, readErrorText } from '../src/client/workspace/file-ops-view.js'
+import { codeLanguageForPath, deleteErrorFeedback, isMarkdownPath, readErrorText } from '../src/client/workspace/file-ops-view.js'
 
 describe('isMarkdownPath', () => {
   it('正常-.md/.markdown 识别为 markdown', () => {
@@ -12,6 +12,45 @@ describe('isMarkdownPath', () => {
     expect(isMarkdownPath('src/main.ts')).toBe(false)
     expect(isMarkdownPath('notes.md.txt')).toBe(false)
     expect(isMarkdownPath('noext')).toBe(false)
+  })
+})
+
+describe('codeLanguageForPath', () => {
+  it('正常-常用扩展名映射到 highlight.js 语言 id', () => {
+    expect(codeLanguageForPath('src/main.ts')).toBe('typescript')
+    expect(codeLanguageForPath('app/component.tsx')).toBe('typescript')
+    expect(codeLanguageForPath('index.js')).toBe('javascript')
+    expect(codeLanguageForPath('chunk.mjs')).toBe('javascript')
+    expect(codeLanguageForPath('style.css')).toBe('css')
+    expect(codeLanguageForPath('package.json')).toBe('json')
+    expect(codeLanguageForPath('cmd/server.go')).toBe('go')
+    expect(codeLanguageForPath('tools/run.py')).toBe('python')
+    expect(codeLanguageForPath('Main.java')).toBe('java')
+    expect(codeLanguageForPath('lib.rs')).toBe('rust')
+    expect(codeLanguageForPath('a.c')).toBe('cpp')
+    expect(codeLanguageForPath('a.cpp')).toBe('cpp')
+    expect(codeLanguageForPath('a.h')).toBe('cpp')
+    expect(codeLanguageForPath('run.sh')).toBe('bash')
+    expect(codeLanguageForPath('run.bash')).toBe('bash')
+    expect(codeLanguageForPath('ci.yml')).toBe('yaml')
+    expect(codeLanguageForPath('ci.yaml')).toBe('yaml')
+    expect(codeLanguageForPath('Cargo.toml')).toBe('ini')
+    expect(codeLanguageForPath('query.sql')).toBe('sql')
+    expect(codeLanguageForPath('page.html')).toBe('xml')
+    expect(codeLanguageForPath('Comp.vue')).toBe('xml')
+    expect(codeLanguageForPath('Comp.svelte')).toBe('xml')
+  })
+
+  it('正常-大小写不敏感', () => {
+    expect(codeLanguageForPath('README.TS')).toBe('typescript')
+    expect(codeLanguageForPath('Config.JSON')).toBe('json')
+  })
+
+  it('边界-未收录/无扩展名/markdown 返回 undefined（走纯文本）', () => {
+    expect(codeLanguageForPath('README.md')).toBeUndefined()
+    expect(codeLanguageForPath('notes.md.txt')).toBeUndefined()
+    expect(codeLanguageForPath('noext')).toBeUndefined()
+    expect(codeLanguageForPath('data.bin')).toBeUndefined()
   })
 })
 

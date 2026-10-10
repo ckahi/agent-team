@@ -19,8 +19,8 @@ export async function callAgentTeam<M extends AgentTeamMethod>(
 ): Promise<AgentTeamResult<M>> {
   const [payload, expectedRevision] = args
   const controller = new AbortController()
-  // 压缩/命令执行可能在宿主侧等待模型调用，给更长超时
-  const timeoutMs = method === 'team.reset' || method === 'team.dissolve' || method === 'team.command.execute' || method === 'team.command.compactAll'
+  // 压缩/命令执行可能在宿主侧等待模型调用，给更长超时；大文件全量 SSR 高亮（用户明确不设阈值）同级。
+  const timeoutMs = method === 'team.reset' || method === 'team.dissolve' || method === 'team.command.execute' || method === 'team.command.compactAll' || method === 'team.workspace.highlight'
     ? 120_000
     : 10_000
   const timeout = setTimeout(() => { controller.abort() }, timeoutMs)
