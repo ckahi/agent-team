@@ -22,6 +22,23 @@ import type {
 
 export type { WorkspaceChoice } from './types.js'
 
+// —— 激活链路取证埋点（诊断 renderer-timeout / 签名 B：渲染侧静默挂起）——
+// 四阶段标记：module-evaluated（bundle 求值）→ components-module-evaluated →
+// apply-begin/apply-done（宿主调 apply）→ overlay-first-render（React 真挂载）。
+// 埋点自身绝不抛错，避免取证代码反噬激活链路。
+export function markBootStage(stage: string): void {
+  try {
+    console.log(`[agent-team:boot] ${stage} @ ${new Date().toISOString()}`)
+    const host = window as typeof window & { __AGENT_TEAM_BOOT_STAGE__?: string }
+    host.__AGENT_TEAM_BOOT_STAGE__ = stage
+  } catch {
+    // 取证失败静默吞掉：诊断埋点不得影响插件激活
+  }
+}
+
+markBootStage('components-module-evaluated')
+let overlayFirstRenderMarked = false
+
 const floatingLauncherStorageKey = 'dsh-agent-team:floating-launcher-position'
 const floatingLauncherMargin = 8
 const floatingLauncherWidth = 42
@@ -368,6 +385,10 @@ export function AgentTeamSettingsSection(_props: SettingsSectionOwnerProps): JSX
 }
 
 export function AgentTeamOverlay({ pickWorkspace }: { pickWorkspace: () => Promise<WorkspaceChoice | null> }): JSX.Element | null {
+  if (!overlayFirstRenderMarked) {
+    overlayFirstRenderMarked = true
+    markBootStage('overlay-first-render')
+  }
   const { visible, createTeamRequest, selectedTeamId } = useAgentTeamUi()
   const { catalog, assistants, teams, error, load } = useAgentTeamData(true)
   const selectedTeam = teams.find(team => team.id === selectedTeamId)
