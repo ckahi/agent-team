@@ -614,7 +614,11 @@ export class TeamRuntime {
       let team = this.service.getTeam(teamId)
       // ownership_conflict 态存在「宿主 registry 活着但插件无 AgentHandle」的无主会话——这正是冲突的成因。
       // 该态的死胡同出口就是解散：跳过 live-but-unowned 前置检查，无主会话不由插件处理，留待重启自然回收。
-      if (team.state !== 'ownership_conflict') {
+      // delete_blocked 若源自冲突态解散的中途失败，重试延续同一豁免（P-1）：
+      // delete_blocked 的其他成因（owned 会话 dispose/flush 失败）下成员会话仍被本插件持有，
+      // 本就通过 live-but-unowned 检查，豁免不改变其可达路径，无新增风险。
+      const skipLiveUnownedCheck = team.state === 'ownership_conflict' || team.state === 'delete_blocked'
+      if (!skipLiveUnownedCheck) {
         const members = Object.values(team.members)
         for (const member of members) {
           const sessionId = SessionId(member.sessionId)

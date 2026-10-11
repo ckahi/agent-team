@@ -658,6 +658,37 @@ describe('AgentTeamService', () => {
     expect(store.getTeam(team.id)).toBeDefined()
   })
 
+  it('keeps the live-unowned exemption on delete_blocked retry after a conflicted dissolution fails midway', async () => {
+    const { ctx, service, store, liveAgents } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Conflicted Retry Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'ownership_conflict' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    // 无主会话仍在宿主 registry：首次解散与重试期间都不消失
+    liveAgents.add(member.sessionId)
+    const deleteTeamRecords = vi.spyOn(service, 'deleteTeamRecords')
+      .mockRejectedValueOnce(new Error('disk boom'))
+
+    // 首次解散：豁免生效进入流程，但删记录失败 → delete_blocked
+    await expect(service.dissolveTeam(team.id, team.name)).rejects.toMatchObject({ code: 'TEAM_DELETE_FAILED' })
+    const blocked = service.getTeam(team.id)
+    expect(blocked?.state).toBe('delete_blocked')
+    expect(deleteTeamRecords).toHaveBeenCalledOnce()
+
+    // 重试解散：state 已非 ownership_conflict，豁免必须延续（否则又被 live-but-unowned 检查挡回死胡同）
+    await service.dissolveTeam(team.id, 'Conflicted Retry Team')
+
+    expect(store.getTeam(team.id)).toBeUndefined()
+    expect(store.getAssistant(assistant.id)).toBeDefined()
+  })
+
   it('adds, promotes, and removes draft members without changing templates', async () => {
     const { service } = createHarness()
     const assistant = await service.createAssistant(assistantInput())
