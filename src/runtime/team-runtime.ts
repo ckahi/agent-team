@@ -87,7 +87,7 @@ export class TeamRuntime {
   private readonly owned = new Map<string, OwnedAgent>()
   private readonly activating = new Map<string, { teamId: string; slotId: string }>()
   private readonly operations = new Map<string, Promise<unknown>>()
-  /** 进行中的后台启动流程（team.start 异步语义），用于测试等待与 dispose 观测。 */
+  /** 进行中的后台启动流程（team.start 异步语义）：dispose 会等待其结束，测试经 settleStart 等待终态。 */
   private readonly pendingStarts = new Map<string, Promise<unknown>>()
   private readonly disposeStatusListener: () => void
   private readonly disposeConversationListener: () => void
@@ -508,7 +508,9 @@ export class TeamRuntime {
   resetTeam(teamId: string): Promise<TeamAggregate> {
     return this.exclusive(teamId, async () => {
       const team = this.service.getTeam(teamId)
-      if (!['draft', 'active', 'error'].includes(team.state)) {
+      // starting 态允许 reset：reset 经 exclusive 队列自然排在后台启动段（finishStartUnlocked）之后，
+      // 语义确定为「等启动完成再重置」，结果不依赖微任务时序。
+      if (!['draft', 'starting', 'active', 'error'].includes(team.state)) {
         throw new AgentTeamError('TEAM_NOT_ACTIVE', `Cannot reset team in state '${team.state}'`)
       }
 
@@ -763,6 +765,8 @@ export class TeamRuntime {
     for (const timer of this.conversationPublishes.values()) clearTimeout(timer)
     this.conversationPublishes.clear()
     await Promise.allSettled([...this.operations.values()])
+    // 等待尚未入队 operations 的后台启动段（begin 已 resolve、finish 未入队的微任务间隙）
+    await Promise.allSettled([...this.pendingStarts.values()])
     const owned = [...this.owned.values()]
     for (const entry of owned) entry.handle.agent.cancel({ kind: 'disposed' }, { keepInbox: true })
     await Promise.allSettled(owned.map(entry => entry.handle.agent.whenIdle()))
@@ -816,18 +820,32 @@ export class TeamRuntime {
     ))
   }
 
-  /** 重活后台段：快照刷新 → 成员上线 → 消息恢复 → 落盘 active；失败经 markTeamError 落 error 终态。 */
+  /**
+   * 重活后台段：快照刷新 → 成员上线 → 消息恢复 → 落盘 active；失败经 markTeamError 落 error 终态。
+   * 入口与 persistActive 回调双重校验 state === 'starting'：finish 在 begin resolve 后才入队，
+   * dissolve/reset 可能插队落终态（如 delete_blocked），守卫保证后台段绝不覆写他人写入的终态。
+   */
   private async finishStartUnlocked(teamId: string): Promise<TeamAggregate> {
     const startedAt = Date.now()
     try {
+      const team = this.service.getTeam(teamId)
+      if (team.state !== 'starting') {
+        this.ctx.logger.warn(
+          `agent-team: team.start ${teamId} skipped: team state became '${team.state}' before background start`,
+        )
+        return team
+      }
+      const teamName = team.name
       await this.timed(teamId, 'refreshMemberSnapshots', () => this.service.refreshMemberSnapshots(teamId))
       await this.timed(teamId, 'ensureMembersOnline', () => this.ensureMembersOnline(this.service.getTeam(teamId)))
       await this.timed(teamId, 'recoverMessages', () => this.messages.recover(this.service.getTeam(teamId)))
       const done = await this.timed(teamId, 'persistActive', () => this.service.updateRuntimeTeam(
         teamId,
-        current => ({ ...current, state: 'active', lastError: undefined }),
+        current => current.state === 'starting'
+          ? { ...current, state: 'active', lastError: undefined }
+          : current,
         'team.started',
-        `Team ${teamId} started`,
+        `Team ${teamName} started`,
       ))
       this.ctx.logger.info(`agent-team: team.start ${teamId} completed in ${Date.now() - startedAt}ms`)
       return done
@@ -836,7 +854,14 @@ export class TeamRuntime {
         `agent-team: team.start ${teamId} failed after ${Date.now() - startedAt}ms:`,
         error instanceof Error ? error.message : String(error),
       )
-      await this.markTeamError(teamId, error)
+      try {
+        await this.markTeamError(teamId, error)
+      } catch (markError) {
+        this.ctx.logger.error(
+          `agent-team: team.start ${teamId} failed to persist error state; team may remain 'starting' until plugin restart recovery`,
+          markError,
+        )
+      }
       throw error
     }
   }

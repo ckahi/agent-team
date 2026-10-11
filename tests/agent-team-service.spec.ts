@@ -938,6 +938,103 @@ describe('AgentTeamService', () => {
     expect(service.getTeam(draft.id).state).toBe('active')
   })
 
+  it('keeps the delete_blocked final state when dissolve interleaves between begin and finish', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Dissolve Interleave Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    // 用 error 态团队：draft 走 service 快捷删除，不经 runtime.dissolveTeam 的 delete_blocked 路径
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'error' }))
+    const team = service.getTeam(draft.id)
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => {})
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+    const deleteTeamRecords = vi.spyOn(service, 'deleteTeamRecords')
+      .mockRejectedValueOnce(new Error('disk boom'))
+
+    // 同步连续入队：begin → dissolve → finish（finish 在 begin resolve 后才入队，落在 dissolve 之后）
+    const startPromise = service.startTeam(team.id, { expectedRevision: team.revision })
+    const dissolvePromise = service.dissolveTeam(team.id, 'Dissolve Interleave Team')
+    const started = await startPromise
+    await expect(dissolvePromise).rejects.toMatchObject({ code: 'TEAM_DELETE_FAILED' })
+    await settleStart(runtime, draft.id)
+
+    expect(started.state).toBe('starting')
+    const final = service.getTeam(draft.id)
+    expect(final.state).toBe('delete_blocked')
+    // 守卫生效：后台启动段不得覆写 dissolve 落下的终态，也不得执行成员上线
+    expect(runtimeInternals(runtime).ensureMembersOnline).not.toHaveBeenCalled()
+    expect(deleteTeamRecords).toHaveBeenCalledOnce()
+  })
+
+  it('queues resetTeam behind the background start for a deterministic result', async () => {
+    const { ctx, service } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Reset During Start Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    let releaseHeavyWork: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { releaseHeavyWork = resolve })
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => { await gate })
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+    await new Promise<void>(resolve => { setTimeout(resolve, 0) })
+    expect(service.getTeam(draft.id).state).toBe('starting')
+
+    // starting 期 reset 入队，排在后台启动段之后
+    const resetPromise = service.resetTeam(
+      draft.id,
+      'Reset During Start Team',
+      { expectedRevision: service.getTeam(draft.id).revision },
+    )
+    releaseHeavyWork!()
+    const reset = await resetPromise
+    await settleStart(runtime, draft.id)
+
+    expect(started.state).toBe('starting')
+    expect(reset.state).toBe('active')
+    expect(Object.keys(reset.retiredSessions)).toHaveLength(1)
+    expect(runtimeInternals(runtime).ensureMembersOnline).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves a stuck starting team observable when markTeamError itself fails to persist', async () => {
+    const { ctx, service, store } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Stuck Starting Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => {
+      throw new AgentTeamError('WORKSPACE_UNAVAILABLE', 'workspace gone')
+    })
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+    // begin 落盘已完成，下一次 updateTeam 即 markTeamError 的 error 态写入
+    const updateSpy = vi.spyOn(store, 'updateTeam').mockRejectedValueOnce(new Error('disk full'))
+    await settleStart(runtime, draft.id)
+
+    expect(started.state).toBe('starting')
+    expect(updateSpy).toHaveBeenCalledOnce()
+    // markTeamError 自身落盘失败：团队滞留 starting（可观测、重启后 recoverTeams 认领），不得误报 error
+    expect(service.getTeam(draft.id).state).toBe('starting')
+  })
+
   it('preserves member-level overrides across a snapshot refresh', async () => {
     const { ctx, service, store } = createHarness()
     ctx.provide('sessionPersistence', { list: async () => [] } as never)
