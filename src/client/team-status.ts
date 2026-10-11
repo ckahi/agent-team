@@ -12,3 +12,8 @@ export function isTeamExecuting(team: TeamExecutionView): boolean {
 export function canRetryTeamStart(state: string): boolean {
   return state === 'error'
 }
+
+/** team.start 改异步启动语义后，starting 是请求返回后的常态中间态，UI 需渲染「启动中」。 */
+export function isTeamStarting(state: string): boolean {
+  return state === 'starting'
+}

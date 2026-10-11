@@ -713,9 +713,11 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
     const started = await service.startTeam(team.id, { expectedRevision: team.revision })
+    await settleStart(runtime, team.id)
 
-    expect(started.state).toBe('active')
-    expect(Object.values(started.members).every(member => member.desiredState === 'online')).toBe(true)
+    expect(started.state).toBe('starting')
+    expect(service.getTeam(team.id).state).toBe('active')
+    expect(Object.values(service.getTeam(team.id).members).every(member => member.desiredState === 'online')).toBe(true)
     expect(ensureMemberOnline).toHaveBeenCalledOnce()
   })
 
@@ -758,9 +760,11 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
     const started = await service.startTeam(team.id, { expectedRevision: team.revision })
-    const member = started.members[team.leaderSlotId]!
+    await settleStart(runtime, team.id)
+    const member = service.getTeam(team.id).members[team.leaderSlotId]!
 
-    expect(started.state).toBe('active')
+    expect(started.state).toBe('starting')
+    expect(service.getTeam(team.id).state).toBe('active')
     expect(member.assistantSnapshot.agentPresetId).toBe('standard')
     expect(member.assistantSnapshot.revision).toBe(2)
     expect(member.displayName).toBe('Codex Lead v2')
@@ -782,9 +786,11 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
     const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
-    const member = started.members[started.leaderSlotId]!
+    await settleStart(runtime, draft.id)
+    const member = service.getTeam(draft.id).members[started.leaderSlotId]!
 
-    expect(started.state).toBe('active')
+    expect(started.state).toBe('starting')
+    expect(service.getTeam(draft.id).state).toBe('active')
     expect(member.assistantSnapshot.agentPresetId).toBe('standard')
   })
 
@@ -803,8 +809,10 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
     const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+    await settleStart(runtime, draft.id)
 
-    expect(started.revision).toBe(draft.revision + 2)
+    expect(started.revision).toBe(draft.revision + 1)
+    expect(service.getTeam(draft.id).revision).toBe(draft.revision + 2)
     expect(store.listActivities(draft.id).map(activity => activity.kind)).not.toContain('team.snapshots_refreshed')
   })
 
@@ -826,9 +834,10 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
-    await expect(service.startTeam(team.id, { expectedRevision: team.revision }))
-      .rejects.toMatchObject({ code: 'ASSISTANT_NOT_FOUND' })
+    const started = await service.startTeam(team.id, { expectedRevision: team.revision })
+    await settleStart(runtime, team.id)
 
+    expect(started.state).toBe('starting')
     const failed = service.getTeam(team.id)
     expect(failed.state).toBe('error')
     expect(failed.lastError?.code).toBe('ASSISTANT_NOT_FOUND')
@@ -855,9 +864,10 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => { throw failure })
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
-    await expect(service.startTeam(team.id, { expectedRevision: team.revision }))
-      .rejects.toMatchObject({ code: 'PRESET_PROMPT_INCOMPATIBLE' })
+    const started = await service.startTeam(team.id, { expectedRevision: team.revision })
+    await settleStart(runtime, team.id)
 
+    expect(started.state).toBe('starting')
     const failed = service.getTeam(team.id)
     expect(failed.state).toBe('error')
     expect(failed.lastError).toMatchObject({ code: 'PRESET_PROMPT_INCOMPATIBLE', message: failure.message })
@@ -865,9 +875,67 @@ describe('AgentTeamService', () => {
 
     runtimeInternals(runtime).ensureMemberOnline = vi.fn(async () => {})
     const retried = await service.startTeam(team.id, { expectedRevision: failed.revision })
+    await settleStart(runtime, team.id)
 
-    expect(retried.state).toBe('active')
-    expect(retried.lastError).toBeUndefined()
+    expect(retried.state).toBe('starting')
+    expect(service.getTeam(team.id).state).toBe('active')
+    expect(service.getTeam(team.id).lastError).toBeUndefined()
+  })
+
+  it('returns a starting team immediately while the heavy start keeps running in the background', async () => {
+    const { ctx, service } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Async Start Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    let releaseHeavyWork: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { releaseHeavyWork = resolve })
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => { await gate })
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    const started = await service.startTeam(draft.id, { expectedRevision: draft.revision })
+    // 让后台启动段完成调度（begin.then 微任务），但保持 gate 关闭使重活挂起
+    await new Promise<void>(resolve => { setTimeout(resolve, 0) })
+
+    expect(started.state).toBe('starting')
+    expect(service.getTeam(draft.id).state).toBe('starting')
+    expect(runtimeInternals(runtime).ensureMembersOnline).toHaveBeenCalledOnce()
+
+    releaseHeavyWork!()
+    await settleStart(runtime, draft.id)
+
+    expect(service.getTeam(draft.id).state).toBe('active')
+  })
+
+  it('rejects a duplicate start with TEAM_NOT_ACTIVE while the first start is running', async () => {
+    const { ctx, service } = createHarness()
+    ctx.provide('sessionPersistence', { list: async () => [] } as never)
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Duplicate Start Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    let releaseHeavyWork: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { releaseHeavyWork = resolve })
+    runtimeInternals(runtime).ensureMembersOnline = vi.fn(async () => { await gate })
+    runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
+
+    await service.startTeam(draft.id, { expectedRevision: draft.revision })
+
+    await expect(service.startTeam(draft.id, { expectedRevision: service.getTeam(draft.id).revision }))
+      .rejects.toMatchObject({ code: 'TEAM_NOT_ACTIVE' })
+
+    releaseHeavyWork!()
+    await settleStart(runtime, draft.id)
+    expect(service.getTeam(draft.id).state).toBe('active')
   })
 
   it('preserves member-level overrides across a snapshot refresh', async () => {
@@ -892,8 +960,11 @@ describe('AgentTeamService', () => {
     runtimeInternals(runtime).messages = { recover: vi.fn(async () => {}) } as never
 
     const started = await service.startTeam(team.id, { expectedRevision: service.getTeam(team.id).revision })
-    const refreshed = started.members[member.id]!
+    await settleStart(runtime, team.id)
+    const refreshed = service.getTeam(team.id).members[member.id]!
 
+    expect(started.state).toBe('starting')
+    expect(service.getTeam(team.id).state).toBe('active')
     expect(refreshed.permissionPresetId).toBe('workspace-write')
     expect(refreshed.reasoningEffort).toBe('high')
     expect(refreshed.assistantSnapshot.agentPresetId).toBe('standard')
@@ -1296,6 +1367,7 @@ interface FakeAgent {
 
 interface RuntimeInternals {
   owned: Map<string, unknown>
+  pendingStarts: Map<string, Promise<unknown>>
   commands: TeamCommandHandler
   messages: TeamMessageDispatcher
   ensureMembersOnline: (team: TeamAggregate) => Promise<void>
@@ -1305,6 +1377,12 @@ interface RuntimeInternals {
 
 function runtimeInternals(runtime: TeamRuntime): RuntimeInternals {
   return runtime as unknown as RuntimeInternals
+}
+
+/** 等待某团队的后台启动流程结束（成功或失败落终态）。 */
+async function settleStart(runtime: TeamRuntime, teamId: string): Promise<void> {
+  const pending = runtimeInternals(runtime).pendingStarts.get(teamId)
+  if (pending !== undefined) await pending
 }
 
 function fakeAgent(): FakeAgent {

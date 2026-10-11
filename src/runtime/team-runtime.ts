@@ -87,6 +87,8 @@ export class TeamRuntime {
   private readonly owned = new Map<string, OwnedAgent>()
   private readonly activating = new Map<string, { teamId: string; slotId: string }>()
   private readonly operations = new Map<string, Promise<unknown>>()
+  /** 进行中的后台启动流程（team.start 异步语义），用于测试等待与 dispose 观测。 */
+  private readonly pendingStarts = new Map<string, Promise<unknown>>()
   private readonly disposeStatusListener: () => void
   private readonly disposeConversationListener: () => void
   private readonly conversationPublishes = new Map<string, ReturnType<typeof setTimeout>>()
@@ -372,8 +374,26 @@ export class TeamRuntime {
     }
   }
 
+  /**
+   * team.start 异步启动语义：请求只等待轻量前置（状态校验 + 落盘 starting + SSE team.starting），
+   * 重活（refreshMemberSnapshots / ensureMembersOnline / recover）在后台经 exclusive 队列继续，
+   * 终态（active / error）经既有 change 事件推送客户端。慢路径不再拖垮 HTTP 请求造成假超时。
+   */
   startTeam(teamId: string): Promise<TeamAggregate> {
-    return this.exclusive(teamId, () => this.startTeamUnlocked(teamId))
+    // 快速失败：starting 期间重复 start 不进 exclusive 队列排队（否则会阻塞到首次启动结束才报 TEAM_NOT_ACTIVE）。
+    const current = this.service.getTeam(teamId)
+    if (current.state !== 'draft' && current.state !== 'error') {
+      throw new AgentTeamError('TEAM_NOT_ACTIVE', `Cannot start team in state '${current.state}'`)
+    }
+    const begin = this.exclusive(teamId, () => this.beginStartUnlocked(teamId))
+    const finish = begin
+      .then(() => this.exclusive(teamId, () => this.finishStartUnlocked(teamId)))
+      .catch(() => undefined)
+    this.pendingStarts.set(teamId, finish)
+    void finish.finally(() => {
+      if (this.pendingStarts.get(teamId) === finish) this.pendingStarts.delete(teamId)
+    })
+    return begin
   }
 
   activateMember(teamId: string, slotId: string): Promise<TeamAggregate> {
@@ -774,12 +794,13 @@ export class TeamRuntime {
     }
   }
 
-  private async startTeamUnlocked(teamId: string): Promise<TeamAggregate> {
+  /** 轻量前置：校验状态可启动并落盘 starting（发布 team.starting）。失败同步抛给请求方。 */
+  private async beginStartUnlocked(teamId: string): Promise<TeamAggregate> {
     const team = this.service.getTeam(teamId)
     if (team.state !== 'draft' && team.state !== 'error') {
       throw new AgentTeamError('TEAM_NOT_ACTIVE', `Cannot start team in state '${team.state}'`)
     }
-    await this.service.updateRuntimeTeam(
+    return await this.timed(teamId, 'persistStarting', () => this.service.updateRuntimeTeam(
       teamId,
       current => ({
         ...current,
@@ -792,20 +813,41 @@ export class TeamRuntime {
       }),
       'team.starting',
       `Team ${team.name} is starting`,
-    )
+    ))
+  }
+
+  /** 重活后台段：快照刷新 → 成员上线 → 消息恢复 → 落盘 active；失败经 markTeamError 落 error 终态。 */
+  private async finishStartUnlocked(teamId: string): Promise<TeamAggregate> {
+    const startedAt = Date.now()
     try {
-      await this.service.refreshMemberSnapshots(teamId)
-      await this.ensureMembersOnline(this.service.getTeam(teamId))
-      await this.messages.recover(this.service.getTeam(teamId))
-      return await this.service.updateRuntimeTeam(
+      await this.timed(teamId, 'refreshMemberSnapshots', () => this.service.refreshMemberSnapshots(teamId))
+      await this.timed(teamId, 'ensureMembersOnline', () => this.ensureMembersOnline(this.service.getTeam(teamId)))
+      await this.timed(teamId, 'recoverMessages', () => this.messages.recover(this.service.getTeam(teamId)))
+      const done = await this.timed(teamId, 'persistActive', () => this.service.updateRuntimeTeam(
         teamId,
         current => ({ ...current, state: 'active', lastError: undefined }),
         'team.started',
-        `Team ${team.name} started`,
-      )
+        `Team ${teamId} started`,
+      ))
+      this.ctx.logger.info(`agent-team: team.start ${teamId} completed in ${Date.now() - startedAt}ms`)
+      return done
     } catch (error) {
+      this.ctx.logger.warn(
+        `agent-team: team.start ${teamId} failed after ${Date.now() - startedAt}ms:`,
+        error instanceof Error ? error.message : String(error),
+      )
       await this.markTeamError(teamId, error)
       throw error
+    }
+  }
+
+  /** 记录 team.start 某一阶段耗时，供宿主 console 归因慢启动。 */
+  private async timed<T>(teamId: string, phase: string, run: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now()
+    try {
+      return await run()
+    } finally {
+      this.ctx.logger.info(`agent-team: team.start ${teamId} phase '${phase}' took ${Date.now() - startedAt}ms`)
     }
   }
 

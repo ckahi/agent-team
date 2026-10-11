@@ -32,7 +32,7 @@ import {
 import { AnimatedModal, Empty, Field } from '../shared.js'
 import { openTeam } from '../store.js'
 import { isRunForTeam, useCompactRun } from '../state/compact-progress.js'
-import { canRetryTeamStart, isTeamExecuting } from '../team-status.js'
+import { canRetryTeamStart, isTeamExecuting, isTeamStarting } from '../team-status.js'
 import { countDriftedMembers } from '../team-persona.js'
 import type { WorkspaceChoice } from '../types.js'
 import { ConversationColumn } from '../workbench/ConversationColumn.js'
@@ -958,6 +958,9 @@ function TeamCard({
           <strong className={css.teamCardName}>{team.name}</strong>
           <span className={css.teamCardWorkspace}>{team.workspacePath}</span>
         </div>
+        {isTeamStarting(team.state) && (
+          <span className={`${css.badge} ${css.badgeSuccess ?? ''}`}>启动中…</span>
+        )}
         {canRetryTeamStart(team.state) && (
           <span className={css.teamCardErrorActions}>
             <span className={`${css.badge} ${css.badgeError}`}>启动失败</span>

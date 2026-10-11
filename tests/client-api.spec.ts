@@ -310,4 +310,49 @@ describe('Agent Team client requests', () => {
       },
     })
   })
+
+  it('keeps team.start on the long timeout tier and does not abort at the default 10s', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      }))
+      vi.stubGlobal('fetch', fetch)
+      vi.stubGlobal('crypto', { randomUUID: () => 'request-1' })
+      const { callAgentTeam } = await import('../src/client/api.js')
+
+      const pending = callAgentTeam('team.start', { id: 'team-1' })
+      const assertion = expect(pending).rejects.toThrow('请求超时：team.start')
+
+      await vi.advanceTimersByTimeAsync(10_500)
+
+      // 默认 10s 档已过，team.start 仍不应被客户端主动中止
+      expect(fetch).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(110_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still aborts ordinary requests at the default 10s tier', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      }))
+      vi.stubGlobal('fetch', fetch)
+      vi.stubGlobal('crypto', { randomUUID: () => 'request-1' })
+      const { callAgentTeam } = await import('../src/client/api.js')
+
+      const pending = callAgentTeam('skill.catalog', { agentPresetId: 'standard' })
+      const assertion = expect(pending).rejects.toThrow('请求超时：skill.catalog')
+
+      await vi.advanceTimersByTimeAsync(10_500)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

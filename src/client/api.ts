@@ -20,7 +20,8 @@ export async function callAgentTeam<M extends AgentTeamMethod>(
   const [payload, expectedRevision] = args
   const controller = new AbortController()
   // 压缩/命令执行可能在宿主侧等待模型调用，给更长超时；大文件全量 SSR 高亮（用户明确不设阈值）同级。
-  const timeoutMs = method === 'team.reset' || method === 'team.dissolve' || method === 'team.command.execute' || method === 'team.command.compactAll' || method === 'team.workspace.highlight'
+  // team.start 虽已改异步启动语义（请求立即返回），但冷启动首次持久化写盘等慢路径仍可能超过默认档，保留长超时兜底。
+  const timeoutMs = method === 'team.start' || method === 'team.reset' || method === 'team.dissolve' || method === 'team.command.execute' || method === 'team.command.compactAll' || method === 'team.workspace.highlight'
     ? 120_000
     : 10_000
   const timeout = setTimeout(() => { controller.abort() }, timeoutMs)
