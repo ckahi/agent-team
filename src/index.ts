@@ -24,6 +24,7 @@ import {
 } from './storage/assistant-builder-preferences.js'
 import { DomainAgentTeamStore } from './storage/store.js'
 import { registerNativeDirectoryPicker } from './runtime/native-directory-picker.js'
+import { installProjectionCacheKeyCompat, type ProjectionCacheLike } from './runtime/projection-cache-compat.js'
 import { registerWebTransport } from './transport/web.js'
 
 export const name = 'agent-team'
@@ -57,7 +58,13 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
   let transport: ReturnType<typeof registerWebTransport> | undefined
   let service: AgentTeamService | undefined
   let disposeNativePicker: (() => void) | undefined
+  let disposeProjectionCacheCompat: (() => void) = () => {}
   try {
+    // 存量会话键（agent-team:<uuid>）经此兼容层映射为 path-safe 后写入
+    // session_projcache，消除 fail-soft 警告；服务不可用时静默降级。
+    disposeProjectionCacheCompat = installProjectionCacheKeyCompat(
+      (ctx as Context & { sessionProjectionCache?: ProjectionCacheLike }).sessionProjectionCache,
+    )
     const store = new DomainAgentTeamStore(domain)
     const assistantBuilderModelPreferences = new DomainAssistantBuilderModelPreferenceStore(
       assistantBuilderPreferencesDomain,
@@ -77,6 +84,7 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
     disposeNativePicker = registerNativeDirectoryPicker(ctx)
     ctx.effect(() => async () => {
       disposeNativePicker?.()
+      disposeProjectionCacheCompat()
       transport?.dispose()
       await service?.disposeWorkspaceTracking()
       await assistantBuilderRuntime?.dispose()
@@ -88,6 +96,7 @@ export async function apply(ctx: Context, config: AgentTeamConfig): Promise<void
     runtime.startInteractionBridge()
     service.startWorkspaceTracking()
   } catch (error) {
+    disposeProjectionCacheCompat()
     disposeNativePicker?.()
     transport?.dispose()
     await service?.disposeWorkspaceTracking()
