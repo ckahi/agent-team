@@ -32,6 +32,7 @@ import {
 } from '../domain/types.js'
 import type { AgentTeamStore } from '../storage/store.js'
 import type { AssistantBuilderRuntime } from '../runtime/assistant-builder-runtime.js'
+import { createAgentTeamSessionId } from '../runtime/session-id.js'
 import type { TeamRuntime } from '../runtime/team-runtime.js'
 import { WorkspaceService } from './workspace-service.js'
 import type {
@@ -500,7 +501,7 @@ export class AgentTeamService extends Service {
         assistantSnapshot: snapshotAssistant(assistant),
         permissionPresetId: assistant.permissionPresetId,
         ...(assistant.reasoningEffort === undefined ? {} : { reasoningEffort: assistant.reasoningEffort }),
-        sessionId: `agent-team:${randomUUID()}`,
+        sessionId: createAgentTeamSessionId(),
         desiredState: 'offline',
         lastRuntimeState: 'offline',
         joinedAt: now,
@@ -1214,7 +1215,7 @@ function createMemberSlot(
     assistantSnapshot: snapshotAssistant(assistant),
     permissionPresetId: assistant.permissionPresetId,
     ...(assistant.reasoningEffort === undefined ? {} : { reasoningEffort: assistant.reasoningEffort }),
-    sessionId: `agent-team:${randomUUID()}`,
+    sessionId: createAgentTeamSessionId(),
     desiredState,
     lastRuntimeState: desiredState === 'online' ? 'starting' : 'offline',
     joinedAt: now,
@@ -1235,7 +1236,7 @@ function cloneMemberSlot(source: TeamMemberSlot, now: string): TeamMemberSlot {
     },
     permissionPresetId: source.permissionPresetId,
     ...(source.reasoningEffort === undefined ? {} : { reasoningEffort: source.reasoningEffort }),
-    sessionId: `agent-team:${randomUUID()}`,
+    sessionId: createAgentTeamSessionId(),
     desiredState: 'offline',
     lastRuntimeState: 'offline',
     joinedAt: now,

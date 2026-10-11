@@ -18,6 +18,7 @@ import { TeamRuntime } from '../src/runtime/team-runtime.js'
 import type { TeamCommandHandler } from '../src/runtime/team-command-handler.js'
 import type { TeamMessageDispatcher } from '../src/runtime/team-message-dispatcher.js'
 import { ASSISTANT_BUILDER_PROMPT } from '../src/runtime/assistant-builder-runtime.js'
+import { isPathSafeSessionId } from '../src/runtime/session-id.js'
 
 const config: Config = {
   maxRequestBytes: 128 * 1024,
@@ -396,6 +397,7 @@ describe('AgentTeamService', () => {
     expect(Object.values(team.members)).toHaveLength(2)
     expect(Object.values(team.members).map(member => member.displayName)).toEqual(['Codex Lead', 'Codex Lead'])
     expect(new Set(Object.values(team.members).map(member => member.sessionId)).size).toBe(2)
+    expect(Object.values(team.members).every(member => isPathSafeSessionId(member.sessionId))).toBe(true)
     expect(() => service.getAssistant(assistant.id)).not.toThrow()
 
     await expect(service.dissolveTeam(team.id, 'wrong')).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
@@ -472,6 +474,7 @@ describe('AgentTeamService', () => {
     expect(clonedMembers.every(member => member.assistantSnapshot.mcpServers[0] === 'github')).toBe(true)
     expect(new Set(clonedMembers.map(member => member.id)).size).toBe(clonedMembers.length)
     expect(new Set(clonedMembers.map(member => member.sessionId)).size).toBe(clonedMembers.length)
+    expect(clonedMembers.every(member => isPathSafeSessionId(member.sessionId))).toBe(true)
     expect(clonedMembers.every(member => !sourceMembers.some(sourceMember => sourceMember.id === member.id))).toBe(true)
     expect(clonedMembers.every(member => !sourceMembers.some(sourceMember => sourceMember.sessionId === member.sessionId))).toBe(true)
     expect(clone.members[clone.leaderSlotId]?.role).toBe('leader')

@@ -23,9 +23,13 @@ import type {
 import { projectConversation } from './conversation-projector.js'
 import type { TeamInteractionBridge } from './team-interaction-bridge.js'
 
-export const ASSISTANT_BUILDER_SESSION_ID = 'agent-team:assistant-builder'
-const ASSISTANT_BUILDER_SESSION_PREFIX = `${ASSISTANT_BUILDER_SESSION_ID}:`
+// 会话键必须 path-safe（宿主 per-record 存储域拒绝含冒号的键）。
+// legacy 前缀（冒号形态）仅保留读取兼容：存量会话仍可列出、恢复与归档。
+export const ASSISTANT_BUILDER_SESSION_ID = 'agent-team-assistant-builder'
+const ASSISTANT_BUILDER_SESSION_PREFIX = `${ASSISTANT_BUILDER_SESSION_ID}-`
 const ASSISTANT_BUILDER_DRAFT_ID = `${ASSISTANT_BUILDER_SESSION_PREFIX}draft`
+const LEGACY_ASSISTANT_BUILDER_SESSION_ID = 'agent-team:assistant-builder'
+const LEGACY_ASSISTANT_BUILDER_SESSION_PREFIX = `${LEGACY_ASSISTANT_BUILDER_SESSION_ID}:`
 
 export const ASSISTANT_BUILDER_PROMPT = `
 你是“团队 Agent 小助手”，负责通过对话帮助用户创建可复用的 Agent 助手模板。
@@ -951,6 +955,8 @@ export function hasFreshAssistantDraftUserResponse(
 function isAssistantBuilderSessionId(sessionId: string): boolean {
   return sessionId === ASSISTANT_BUILDER_SESSION_ID
     || sessionId.startsWith(ASSISTANT_BUILDER_SESSION_PREFIX)
+    || sessionId === LEGACY_ASSISTANT_BUILDER_SESSION_ID
+    || sessionId.startsWith(LEGACY_ASSISTANT_BUILDER_SESSION_PREFIX)
 }
 
 function summarizeConversation(

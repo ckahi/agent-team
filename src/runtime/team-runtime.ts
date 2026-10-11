@@ -32,6 +32,7 @@ import type {
 } from '../transport/contracts.js'
 import { projectContextUsage, projectConversation } from './conversation-projector.js'
 import { registerScopedSkillProvider } from './scoped-skills.js'
+import { createAgentTeamSessionId } from './session-id.js'
 import { TeamCommandHandler } from './team-command-handler.js'
 import { resolveSessionLineageOwner, TeamInteractionBridge } from './team-interaction-bridge.js'
 import { TeamMessageDispatcher } from './team-message-dispatcher.js'
@@ -560,7 +561,7 @@ export class TeamRuntime {
             },
           members: mapMembers(current, member => ({
             ...member,
-            sessionId: `agent-team:${randomUUID()}`,
+            sessionId: createAgentTeamSessionId(),
             desiredState: current.state === 'draft' ? 'offline' : 'online',
             lastRuntimeState: shouldRestart ? 'starting' : 'offline',
           })),
