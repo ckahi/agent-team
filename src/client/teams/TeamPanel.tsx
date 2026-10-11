@@ -1113,6 +1113,14 @@ function TeamCard({
           </button>
         </div>
       )}
+      {team.state === 'ownership_conflict' && (
+        <div className={css.teamLastError}>
+          <span>
+            团队成员的会话被其他窗口或宿主实例占用（ownership conflict），本插件无法接管其运行状态。
+            可直接在下方「解散团队」清除记录；占用中的旧会话将在重启后自然回收，不影响助手模板与 Workspace 文件。
+          </span>
+        </div>
+      )}
       <div className={`${css.contextResetPanel} ${css.dissolvePanel}`}>
         <div className={css.contextResetCopy}>
           <strong>解散团队</strong>

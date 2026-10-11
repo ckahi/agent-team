@@ -595,6 +595,69 @@ describe('AgentTeamService', () => {
     expect(store.getAssistant(assistant.id)).toBeDefined()
   })
 
+  it('dissolves an ownership_conflict team even when a member session is live but unowned', async () => {
+    const { ctx, service, store, liveAgents } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Conflicted Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'ownership_conflict' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    liveAgents.add(member.sessionId)
+
+    await service.dissolveTeam(team.id, team.name)
+
+    expect(store.getTeam(team.id)).toBeUndefined()
+    expect(store.getAssistant(assistant.id)).toBeDefined()
+  })
+
+  it('does not let an unowned session detach failure block an ownership_conflict dissolution', async () => {
+    const { ctx, service, store, liveAgents, workspace } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Detach Stuck Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'ownership_conflict' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    liveAgents.add(member.sessionId)
+    workspace.detachSession = vi.fn(async () => { throw new Error('detach refused') })
+
+    await service.dissolveTeam(team.id, team.name)
+
+    expect(store.getTeam(team.id)).toBeUndefined()
+    expect(workspace.detachSession).toHaveBeenCalled()
+  })
+
+  it('still refuses to dissolve an active team with a live unowned session', async () => {
+    const { ctx, service, store, liveAgents } = createHarness()
+    const assistant = await service.createAssistant(assistantInput())
+    const draft = await service.createTeamDraft({
+      name: 'Guarded Team',
+      workspaceId: 'workspace-1',
+      members: [{ assistantId: assistant.id, role: 'leader' }],
+    })
+    await store.updateTeam(draft.id, team => ({ ...team, state: 'active' }))
+    const team = service.getTeam(draft.id)
+    const member = team.members[team.leaderSlotId]!
+    const runtime = new TeamRuntime(ctx, config, service)
+    service.attachRuntime(runtime)
+    liveAgents.add(member.sessionId)
+
+    await expect(service.dissolveTeam(team.id, team.name))
+      .rejects.toMatchObject({ code: 'AGENT_HANDLE_OWNERSHIP_CONFLICT' })
+    expect(store.getTeam(team.id)).toBeDefined()
+  })
+
   it('adds, promotes, and removes draft members without changing templates', async () => {
     const { service } = createHarness()
     const assistant = await service.createAssistant(assistantInput())
@@ -1376,6 +1439,8 @@ function createHarness(workspacePath = '/tmp/agent-team-workspace'): {
   service: AgentTeamService
   store: MemoryStore
   permissionSet: ReturnType<typeof vi.fn>
+  liveAgents: Set<string>
+  workspace: { detachSession: (sessionId: unknown) => Promise<void> }
 } {
   const ctx = new Context()
   ctx.provide('llm', {
@@ -1431,8 +1496,10 @@ function createHarness(workspacePath = '/tmp/agent-team-workspace'): {
     optionOf: (name: string) => ({ value: name, name }),
     set: permissionSet,
   } as never)
+  // 模拟宿主 agent registry：liveAgents 内的 sessionId 视为「活着但插件无 AgentHandle」
+  const liveAgents = new Set<string>()
   ctx.provide('agents', {
-    get: () => undefined,
+    get: (id: unknown) => liveAgents.has(String(id)) ? { id: String(id) } : undefined,
   } as never)
   ctx.provide('sessions', {
     flush: async () => {},
@@ -1450,7 +1517,7 @@ function createHarness(workspacePath = '/tmp/agent-team-workspace'): {
     list: () => [workspace],
   } as never)
   const store = new MemoryStore()
-  return { ctx, service: new AgentTeamService(ctx, config, store), store, permissionSet }
+  return { ctx, service: new AgentTeamService(ctx, config, store), store, permissionSet, liveAgents, workspace }
 }
 
 interface FakeAgent {

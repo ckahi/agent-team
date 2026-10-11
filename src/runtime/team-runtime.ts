@@ -612,16 +612,21 @@ export class TeamRuntime {
   dissolveTeam(teamId: string): Promise<void> {
     return this.exclusive(teamId, async () => {
       let team = this.service.getTeam(teamId)
-      const members = Object.values(team.members)
-      for (const member of members) {
-        const sessionId = SessionId(member.sessionId)
-        if (this.owned.get(member.sessionId) === undefined && this.ctx.agents.get(sessionId) !== undefined) {
-          throw new AgentTeamError(
-            'AGENT_HANDLE_OWNERSHIP_CONFLICT',
-            `Session '${member.sessionId}' is live without this plugin's AgentHandle`,
-          )
+      // ownership_conflict 态存在「宿主 registry 活着但插件无 AgentHandle」的无主会话——这正是冲突的成因。
+      // 该态的死胡同出口就是解散：跳过 live-but-unowned 前置检查，无主会话不由插件处理，留待重启自然回收。
+      if (team.state !== 'ownership_conflict') {
+        const members = Object.values(team.members)
+        for (const member of members) {
+          const sessionId = SessionId(member.sessionId)
+          if (this.owned.get(member.sessionId) === undefined && this.ctx.agents.get(sessionId) !== undefined) {
+            throw new AgentTeamError(
+              'AGENT_HANDLE_OWNERSHIP_CONFLICT',
+              `Session '${member.sessionId}' is live without this plugin's AgentHandle`,
+            )
+          }
         }
       }
+      const members = Object.values(team.members)
 
       if (team.state !== 'deleting') {
         team = await this.service.updateRuntimeTeam(
@@ -659,7 +664,12 @@ export class TeamRuntime {
             ...Object.keys(team.retiredSessions),
           ])
           for (const sessionId of sessionIds) {
-            await workspace.detachSession(SessionId(sessionId))
+            try {
+              await workspace.detachSession(SessionId(sessionId))
+            } catch (error) {
+              // 无主/已冲突会话 detach 可能被宿主拒绝：记 warn 不阻断记录删除（否则团队永远滞留 delete_blocked）
+              this.ctx.logger.warn(`agent-team: workspace session detach failed during dissolution for ${sessionId}`, error)
+            }
           }
         }
 
