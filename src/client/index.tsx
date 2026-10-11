@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   AgentTeamOverlay,
   AgentTeamSettingsSection,
-  markBootStage,
+  markBoot,
   type WorkspaceChoice,
 } from './components.js'
 import { AGENT_TEAM_PICK_DIRECTORY_PATH } from '../transport/contracts.js'
@@ -12,7 +12,7 @@ import { AGENT_TEAM_PICK_DIRECTORY_PATH } from '../transport/contracts.js'
 export const name = 'agent-team-client'
 export const inject = ['slots', 'workspaces']
 
-markBootStage('module-evaluated')
+markBoot('module-evaluated')
 
 interface PickDirectoryResponse {
   ok: boolean
@@ -21,12 +21,17 @@ interface PickDirectoryResponse {
 }
 
 export function apply(ctx: ClientContext): void {
-  markBootStage('apply-begin')
-  ctx.slots.inject('settings.section', () => ctx.slots.register(
-    { name: 'settings.section', id: 'agent-team', order: 40, label: 'Agent 团队' },
-    AgentTeamSettingsSection,
-  ))
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register(
+  markBoot('apply-begin')
+  ctx.slots.inject('settings.section', () => {
+    markBoot('slots-invoke:settings.section')
+    return ctx.slots.register(
+      { name: 'settings.section', id: 'agent-team', order: 40, label: 'Agent 团队' },
+      AgentTeamSettingsSection,
+    )
+  })
+  ctx.slots.inject('shell.overlay', () => {
+    markBoot('slots-invoke:shell.overlay')
+    return ctx.slots.register(
     {
       name: 'shell.overlay',
       id: 'agent-team',
@@ -50,6 +55,7 @@ export function apply(ctx: ClientContext): void {
       }),
     },
     AgentTeamOverlay,
-  ))
-  markBootStage('apply-done')
+  )
+  })
+  markBoot('apply-done')
 }
