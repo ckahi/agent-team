@@ -4,15 +4,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   AgentTeamOverlay,
   AgentTeamSettingsSection,
-  markBoot,
   type WorkspaceChoice,
 } from './components.js'
 import { AGENT_TEAM_PICK_DIRECTORY_PATH } from '../transport/contracts.js'
 
 export const name = 'agent-team-client'
 export const inject = ['slots', 'workspaces']
-
-markBoot('module-evaluated')
 
 interface PickDirectoryResponse {
   ok: boolean
@@ -21,16 +18,13 @@ interface PickDirectoryResponse {
 }
 
 export function apply(ctx: ClientContext): void {
-  markBoot('apply-begin')
   ctx.slots.inject('settings.section', () => {
-    markBoot('slots-invoke:settings.section')
     return ctx.slots.register(
       { name: 'settings.section', id: 'agent-team', order: 40, label: 'Agent 团队' },
       AgentTeamSettingsSection,
     )
   })
   ctx.slots.inject('shell.overlay', () => {
-    markBoot('slots-invoke:shell.overlay')
     return ctx.slots.register(
     {
       name: 'shell.overlay',
@@ -57,5 +51,4 @@ export function apply(ctx: ClientContext): void {
     AgentTeamOverlay,
   )
   })
-  markBoot('apply-done')
 }

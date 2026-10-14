@@ -22,30 +22,6 @@ import type {
 
 export type { WorkspaceChoice } from './types.js'
 
-// —— 激活链路取证埋点（诊断 renderer-timeout / 签名 B：渲染侧静默挂起）——
-// 双通道输出：console.log 前缀 `[agent-team-boot]`（performance.now() 毫秒时间戳）
-// + window.__AT_BOOT_LOG 数组（{ stage, t }，DevTools 免 console 可整段导出）。
-// 判读方法：失败 run 后看最后一条 [agent-team-boot] 即定位卡点层级
-// （bundle 求值 → apply → slot 注册回调 → 组件渲染/mount → 数据加载）。
-// 埋点自身绝不抛错，避免取证代码反噬激活链路。
-export function markBoot(stage: string): void {
-  try {
-    const t = performance.now()
-    console.log(`[agent-team-boot] ${stage} @${t.toFixed(1)}ms`)
-    const host = window as typeof window & { __AT_BOOT_LOG?: Array<{ stage: string, t: number }> }
-    const log = host.__AT_BOOT_LOG ?? []
-    log.push({ stage, t })
-    host.__AT_BOOT_LOG = log
-  } catch {
-    // 取证失败静默吞掉：诊断埋点不得影响插件激活
-  }
-}
-
-markBoot('components-module-evaluated')
-let overlayFirstRenderMarked = false
-let launcherRenderMarked = false
-let loadFirstStartMarked = false
-
 const floatingLauncherStorageKey = 'dsh-agent-team:floating-launcher-position'
 const floatingLauncherMargin = 8
 const floatingLauncherWidth = 42
@@ -144,10 +120,6 @@ function storeFloatingLauncherPlacement(placement: FloatingLauncherPlacement): v
 }
 
 function FloatingTeamLauncher({ hasExecutingTeam }: { hasExecutingTeam: boolean }): JSX.Element {
-  if (!launcherRenderMarked) {
-    launcherRenderMarked = true
-    markBoot('launcher-first-render')
-  }
   const [placement, setPlacement] = useState<FloatingLauncherPlacement>()
   const [dragPosition, setDragPosition] = useState<FloatingLauncherPosition>()
   const [dragging, setDragging] = useState(false)
@@ -165,7 +137,6 @@ function FloatingTeamLauncher({ hasExecutingTeam }: { hasExecutingTeam: boolean 
   const suppressClickRef = useRef(false)
 
   useEffect(() => {
-    markBoot('launcher-mount')
     const stored = readFloatingLauncherPlacement() ?? defaultFloatingLauncherPlacement()
     const initialPosition = clampFloatingLauncherPosition(stored.position)
     setPlacement({
@@ -343,38 +314,24 @@ function useAgentTeamData(includeTeams: boolean, active = true): {
   const [error, setError] = useState<string>()
 
   const load = useCallback(async () => {
-    if (!loadFirstStartMarked) {
-      loadFirstStartMarked = true
-      markBoot('load-first-start')
-    }
     setLoading(true)
     setError(undefined)
     try {
       void callAgentTeam('catalog.get')
         .then(value => {
-          markBoot('catalog.resolve')
           setCatalog(value)
         })
         .catch(cause => {
-          markBoot('catalog.reject')
           const message = cause instanceof Error ? cause.message : String(cause)
           setError(current => current === undefined ? message : `${current}；${message}`)
         })
       const coreRequests = [
         callAgentTeam('assistant.list').then(value => {
-          markBoot('assistant.resolve')
           setAssistants(value.items)
-        }).catch(cause => {
-          markBoot('assistant.reject')
-          throw cause
         }),
         includeTeams
           ? callAgentTeam('team.list').then(value => {
-            markBoot('teams.resolve')
             setTeams(value.items)
-          }).catch(cause => {
-            markBoot('teams.reject')
-            throw cause
           })
           : Promise.resolve().then(() => { setTeams([]) }),
       ]
@@ -417,11 +374,6 @@ export function AgentTeamSettingsSection(_props: SettingsSectionOwnerProps): JSX
 }
 
 export function AgentTeamOverlay({ pickWorkspace }: { pickWorkspace: () => Promise<WorkspaceChoice | null> }): JSX.Element | null {
-  if (!overlayFirstRenderMarked) {
-    overlayFirstRenderMarked = true
-    markBoot('overlay-first-render')
-  }
-  useEffect(() => { markBoot('overlay-mount') }, [])
   const { visible, createTeamRequest, selectedTeamId } = useAgentTeamUi()
   const { catalog, assistants, teams, error, load } = useAgentTeamData(true)
   const selectedTeam = teams.find(team => team.id === selectedTeamId)

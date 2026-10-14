@@ -2645,7 +2645,7 @@ textarea.input {
 
 .managementDialog {
   width: min(900px, calc(100vw - 48px));
-  max-height: min(820px, calc(100vh - 48px));
+  max-height: min(820px, 100%);
 }
 
 .addMemberDialog {
@@ -2663,11 +2663,19 @@ textarea.input {
 
 .managementDialogContent {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 宿主 Modal 把 children 包进无 min-height:0 的 .body（min-width:0 但默认 min-height:auto 拒绝收缩），
+   不补这一环则收缩链在 content→body 之间断裂，滚动区永远拿不到受限高度。 */
+.managementDialogContent > * {
+  min-height: 0;
 }
 
 .managementDialogBody {
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: calc(100vh - 190px);
   overflow-y: auto;
   padding: 4px;
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
