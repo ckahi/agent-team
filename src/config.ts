@@ -9,6 +9,8 @@ export interface Config {
   assistantBuilderModel: string
   assistantBuilderAgentPresetId: string
   assistantBuilderPermissionPresetId: string
+  /** Startup orphan cleanup mode for dissolved-team leftovers (01 Q2; grace-marked). */
+  orphanCleanup: 'delete' | 'log'
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -20,4 +22,5 @@ export const Config: Schema<Config> = Schema.object({
   assistantBuilderModel: Schema.string().default(''),
   assistantBuilderAgentPresetId: Schema.string().default(''),
   assistantBuilderPermissionPresetId: Schema.string().default(''),
+  orphanCleanup: Schema.union(['delete', 'log']).default('delete'),
 })

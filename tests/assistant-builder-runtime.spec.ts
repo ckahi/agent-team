@@ -16,6 +16,7 @@ const config: Config = {
   assistantBuilderModel: '',
   assistantBuilderAgentPresetId: '',
   assistantBuilderPermissionPresetId: '',
+  orphanCleanup: 'delete',
 }
 
 describe('AssistantBuilderRuntime', () => {

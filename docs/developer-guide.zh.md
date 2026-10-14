@@ -18,7 +18,7 @@ src/
 ├── index.ts                  # Host 入口：装配顺序、关闭顺序
 ├── config.ts                 # Schema 配置（8 个配置项）
 ├── domain/                   # 领域层：Zod schema + 纯类型 + 领域错误
-├── storage/                  # 持久化：DomainAgentTeamStore（JSON 文档）
+├── storage/                  # 持久化：CompositeAgentTeamStore（三域拆分 + 迁移/重试/孤儿清理）
 ├── service/                  # AgentTeamService：领域操作门面 + 订阅发布
 ├── runtime/                  # Agent 编排：TeamRuntime、消息派发、交互桥、工具、投影器
 ├── transport/                # web.ts（RPC 路由 + SSE）+ contracts.ts（方法表/视图类型）
@@ -147,11 +147,25 @@ AssistantBuilder 也用同一个桥（`registerScope` 注册自己的会话范�
 
 ## 9. 持久化与恢复
 
-`storage/domain.ts` 打开一个 JSON 文档库（version: 1），`store.ts` 的 `DomainAgentTeamStore` 封装读写 + mutate。团队聚合、消息、活动记录、Operation 游标都在里面。**可靠性设计**：outbox + Operation 游标 + 启动时 `recoverTeams()`，意味着"改一半崩溃"是常态假设。测试里有对应的恢复用例（tests/ 下按模块同名 spec），改持久化/恢复逻辑务必跑全。
+存储拆分为三个 domain（存储拆分改造，2026-10-14，基线 6a561ed）：
+
+| Domain | 布局 | 表 | 说明 |
+|---|---|---|---|
+| `agent_team_runtime` | per-record（每团队/每游标一个文件） | teams, operations | 团队运行单元；单团队文件被外部占用只影响该团队 |
+| `agent_team_assistants` | single | assistants | 助手配置单元，低频小文件 |
+| `agent_team_streams` | per-record（每条记录一个文件） | messages, activities, orphan_marks | 流水单元 + 孤儿清理宽限标记 |
+| `agent_team_assistant_builder` | single（global 单例） | — | 既有偏好设置域，未变动 |
+
+- **接口不变**：`store.ts` 的 `CompositeAgentTeamStore` 实现原 `AgentTeamStore` 契约，service/runtime 无感知。**per-record 键 = 文件名**（`SAFE_KEY_RE=/^[a-zA-Z0-9_-]+$/`），id 生成方案改动必须保持路径安全（UUID 系满足）。
+- **坏文档行为（安装版实证，leader 2026-10-14 裁决）**：per-record 单元（runtime/streams）声明 `invalidRecords: 'backup-and-skip'`——schema-invalid 文档被宿主挪到 `.bak`（logger.error，**插件无回调信号**，表现即"读作 absent"，原文档留 .bak 可人工找回）；malformed-JSON 文档仍静默读作 absent 无信号。**single 单元（assistants/legacy）绝不可声明**——single 无 backupRecord，声明即 open 抛错（dsh-storage-domain lib/index.js:373 实证）， assistants 坏一条 → 整个 open 拒绝 → 激活失败。
+- **存量迁移**：`storage/migration.ts` 首次启动把旧 `agent_team.json`（五表 single）拆分迁入三个新域，可重入（rename 放最后一步，中途崩溃重跑幂等收敛）；迁移/新域 open 失败 = fail-closed（激活报错，错误信息含旧文件绝对路径与"改名移走可跳过迁移"指引，不自动跳过损坏文件）；成功后旧文件改名 `.bak-时间戳` 保留。`legacyAgentTeamSpec` 仅迁移使用，确认全量用户迁移后的版本可移除。
+- **EPERM 写重试**：`storage/write-retry.ts` 对 errno -4048/EPERM 指数退避重试（50ms·2^n，最多 4 次）；域写链拒写时内存不变，put 幂等，update 回调必须保持纯函数（重试会重放）。
+- **孤儿补偿清理**：`storage/orphan-cleanup.ts` 启动时扫描 teamId 不在 teams 表的 messages/activities/operations（缺省 teamId 的全局 operation 保留）；`orphan_marks` 表记宽限，**连续 2 次启动仍缺失才删除**（防单次坏文档/瞬时状态误删），团队恢复自动清标记；`orphanCleanup: 'delete' | 'log'` 配置切换（默认 delete）。
+- **可靠性设计**：outbox + Operation 游标 + 启动时 `recoverTeams()`（在迁移与孤儿清理之后执行），意味着"改一半崩溃"是常态假设。测试里有对应的恢复用例（tests/storage-migration.spec.ts 等），改持久化/恢复逻辑务必跑全。streams 记录数超 5000 启动告警（activities ≈1440 文件/天，保留策略见 01 Q1 裁决）。
 
 ## 10. 配置项（config.ts）
 
-`maxRequestBytes`（RPC 体积上限）、`sseHeartbeatMs`、`runtimeConcurrency`（runtime exclusive 队列并发）、`directMemberChatDefault`（成员直聊默认开关）、`assistantBuilder*` 四项（builder 的 provider/model/preset/权限，空 = 跟随默认）。加配置项记得 Schema 默认值 + `Config` 接口同步。
+`maxRequestBytes`（RPC 体积上限）、`sseHeartbeatMs`、`runtimeConcurrency`（runtime exclusive 队列并发）、`directMemberChatDefault`（成员直聊默认开关）、`assistantBuilder*` 四项（builder 的 provider/model/preset/权限，空 = 跟随默认）、`orphanCleanup`（孤儿清理模式，delete/log，默认 delete）。加配置项记得 Schema 默认值 + `Config` 接口同步。
 
 ## 11. 二次开发常见切入点速查
 

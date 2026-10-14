@@ -25,6 +25,7 @@ const config: Config = {
   assistantBuilderModel: '',
   assistantBuilderAgentPresetId: '',
   assistantBuilderPermissionPresetId: '',
+  orphanCleanup: 'delete',
 }
 
 function assistantFixture(id: string, name: string, overrides: Partial<AssistantTemplate> = {}): AssistantTemplate {
